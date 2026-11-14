@@ -84,7 +84,7 @@ Uma coluna por mês (`jan` a `dez`) com o nível: `alta`, `media`, `baixa` ou `n
    | tapioca, goma | tapioca/goma | tapioca/goma |
    | mel de abelha jandaíra | mel de jandaíra | mel de jandaíra |
 
-   Tratamento: tabela de sinônimos nas funções de consulta (a fazer em 13/11).
+   Tratamento: tabela de sinônimos nas funções de consulta.
 3. **Produtos sem sazonalidade nem preço:** feijão, milho e fava (só do P015, que está inativo).
 4. **`quantidade_kg` nem sempre é kg.** Alface vem em unidades, coentro e couve em maços e ovos em dúzias (a `observacao` avisa). A unidade certa está na tabela de preços.
 5. **Pendências vencidas.** Na data de referência, 5 transações pendentes já passaram do vencimento (P002, P004 e P003). Só as do P003 estão marcadas `ATRASADO - cobrar` na observação. O atraso deve ser calculado pela data, não pela observação.
