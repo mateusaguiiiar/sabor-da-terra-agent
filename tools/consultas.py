@@ -72,8 +72,6 @@ def _encontrar_produto(produto: str, nomes: list) -> dict:
     for c in candidatos:
         pc = _palavras(c)
         parecidos = [n for n in nomes if pc <= _palavras(n) or _palavras(n) <= pc]
-        # Prefere os que começam com a mesma palavra: "goiaba" -> "goiaba paluma",
-        # e não "doce de goiaba", que é outro produto.
         primeira = c.replace("/", " ").split()[0]
         mesmo_inicio = [n for n in parecidos if n.replace("/", " ").split()[0] == primeira]
         if mesmo_inicio:
@@ -468,7 +466,7 @@ def saldo_a_receber(produtor_id: str, periodo: str = None) -> dict:
             "data_venda": _data_ou_none(t["data"]),
             "vencimento": venc.isoformat(),
             "situacao": situacao,
-            "dias": abs(dias),  # dias de atraso (vencido) ou até vencer (a vencer)
+            "dias": abs(dias),  
             "observacao": t["observacao"],
         })
 

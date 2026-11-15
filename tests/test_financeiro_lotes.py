@@ -37,7 +37,6 @@ def test_vendas_p007_soma_manual():
 
 
 def test_vendas_por_periodo_ped012():
-    # PED-012: Maria pergunta quanto vendeu "esse mês" (outubro). Todas as vendas dela foram em setembro.
     outubro = vendas_do_produtor("P001", "mes_atual")
     assert outubro["periodo"] == "out/2026"
     assert outubro["total_vendido"] == 0.00
@@ -47,7 +46,6 @@ def test_vendas_por_periodo_ped012():
 
 
 def test_pagamento_bom_preco_setembro_ped012():
-    # PED-012: "aquele pagamento do Mercado Bom Preço de setembro, já caiu?" -> sim, em 01/10
     vendas = vendas_do_produtor("P001", "2026-09")["vendas"]
     bom_preco = [v for v in vendas if v["comprador"] == "Mercado Bom Preço"]
     assert len(bom_preco) == 2
@@ -69,8 +67,6 @@ def test_vendas_intervalo_e_erros():
     assert "erro" in vendas_do_produtor("P001", "2026-10-31:2026-10-01")
 
 
-# ---------- saldo_a_receber ----------
-
 def test_saldo_p003_vencido():
     r = saldo_a_receber("P003")
     assert r["total_a_receber"] == 6020.00
@@ -80,7 +76,6 @@ def test_saldo_p003_vencido():
 
 
 def test_saldo_p004_vencido_sem_observacao():
-    # A observação do P004 não diz "ATRASADO", mas o vencimento (23/10) já passou
     r = saldo_a_receber("P004")
     assert r["total_vencido"] == 1020.00
     assert r["pendencias"][0]["dias"] == 7
@@ -103,8 +98,6 @@ def test_saldo_produtor_inexistente():
     assert "erro" in saldo_a_receber("P099")
 
 
-# ---------- rastrear_lote ----------
-
 def test_lote_0089_criterio_de_aceite():
     r = rastrear_lote("LOT-2026-0089")
     assert r["produtor_id"] == "P003"
@@ -126,8 +119,6 @@ def test_lote_inexistente():
     assert "erro" in rastrear_lote("LOT-2026-9999")
     assert "erro" in rastrear_lote("")
 
-
-# ---------- segurança ----------
 
 def _tem_chave_sensivel(obj):
     if isinstance(obj, dict):
