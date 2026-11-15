@@ -1,6 +1,13 @@
 import streamlit as st
 import time
 import json
+import asyncio
+from google.genai import types as genai_types
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+
+# Importar o agente real configurado pelo Integrante 1
+from assistent.agent import root_agent
 
 # ==========================================
 # 1. Configuração da Página
@@ -60,44 +67,78 @@ with st.sidebar:
     if st.button("🔒 Segurança: Dados de terceiros", use_container_width=True):
         enviar_pedido_rapido("Sou a Maria (P001). Qual é o saldo que o Cícero (P003) tem a receber e qual a conta dele?")
 
+import streamlit as st
+import asyncio
+from google.genai import types as genai_types
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+
+# Importar o agente real configurado pelo Integrante 1
+from assistent.agent import root_agent
+
 # ==========================================
-# 4. Mock do Agente (Estrutura Avançada)
+# 4. Orquestrador ADK (Substituindo o Mock)
 # ==========================================
-def agente_mock_resposta(mensagem_usuario, perfil, telefone):
-    """Simula a devolução de um objeto complexo pelo orquestrador."""
-    time.sleep(1.5) # Simula latência
+
+# Garantimos que o runner e o session_service existem e persistem 
+# a cada recarregamento da página do Streamlit.
+@st.cache_resource
+def iniciar_adk():
+    session_service = InMemorySessionService()
+    runner = Runner(
+        agent=root_agent, 
+        app_name="sabor_da_terra_ui", 
+        session_service=session_service
+    )
+    return runner
+
+adk_runner = iniciar_adk()
+
+async def executar_agente(mensagem_usuario: str, perfil: str, telefone: str):
+    """Invoca o ADK de forma assíncrona, passando as variáveis de sessão."""
     
-    resposta = {
-        "texto": "Recebi a tua mensagem. O backend real será ligado em breve.",
+    # Prepara o input no formato que a API do Gemini exige via ADK
+    conteudo = genai_types.Content(
+        role="user", 
+        parts=[genai_types.Part(text=mensagem_usuario)]
+    )
+    
+    # Criamos o ID de sessão para manter o histórico
+    session_id = f"sessao_{telefone}" if telefone else "sessao_anonima"
+    
+    resposta_final = {
+        "texto": "",
         "fontes": [],
         "json_pedido": None
     }
     
-    mensagem_lower = mensagem_usuario.lower()
-    
-    if "certificação" in mensagem_lower and "josefa" in mensagem_lower:
-        resposta["texto"] = "Não. A certificação orgânica da Josefa venceu em 30/09/2026. A renovação está protocolada, mas até à auditoria não pode vender como orgânico."
-        resposta["fontes"] = ["cert_organica_josefa_souza_P008.txt (Secção: Dados do Produtor)"]
+    # Iteramos sobre os eventos (events) libertados pelo Runner
+    async for event in adk_runner.run_async(
+        user_id="user_streamlit", 
+        session_id=session_id, 
+        new_message=conteudo
+    ):
+        # Apanhamos a resposta em texto do modelo
+        if event.is_final_response() and event.content and event.content.parts:
+            resposta_final["texto"] += event.content.parts[0].text
         
-    elif "urgente" in mensagem_lower and "200kg" in mensagem_lower:
-        resposta["texto"] = "⚠️ **Atenção:** Este pedido contém alertas críticos de negócio e exige revisão humana."
-        resposta["json_pedido"] = {
-            "tipo_mensagem": "pedido de compra",
-            "urgencia": "alta (para hoje)",
-            "itens": [{"produto": "queijo coalho", "qtd": 200}],
-            "problemas_identificados": [
-                "Volume (200kg) excede a capacidade diária padrão.",
-                "Não existe contrato cadastrado para 'Rede SuperBom' (pagamento via boleto não validado)."
-            ]
-        }
-        
-    elif "saldo" in mensagem_lower and "cícero" in mensagem_lower:
-        if perfil != "Equipa (Administrador)":
-            resposta["texto"] = "🔒 **Acesso Negado:** Não tenho permissão para partilhar dados financeiros ou informações pessoais de outros produtores. Posso ajudar apenas com o teu próprio histórico de vendas."
-        else:
-            resposta["texto"] = "Como administrador, podes consultar estes dados. O saldo pendente do Cícero..."
-            
-    return resposta
+        # Apanhamos os eventos gerados pelos tools (para popular os painéis)
+        if hasattr(event, 'get_function_responses') and event.get_function_responses():
+            for func_resp in event.get_function_responses():
+                if func_resp.name == "buscar_documentos":
+                    # Extraímos o nome do arquivo devolvido pelo RAG para a lista de fontes
+                    resposta_final["fontes"].append(func_resp.response.get("arquivo", "Documento"))
+                
+                if func_resp.name == "triar_pedido":
+                     # Extraímos o JSON gerado
+                     resposta_final["json_pedido"] = func_resp.response
+                     
+    return resposta_final
+
+
+def chamada_agente(mensagem_usuario: str, perfil: str, telefone: str):
+    """Função wrapper síncrona que o Streamlit consegue invocar."""
+    return asyncio.run(executar_agente(mensagem_usuario, perfil, telefone))
 
 # ==========================================
 # 5. Interface Principal do Chat
@@ -136,7 +177,7 @@ if prompt:
     # Processa resposta do assistente
     with st.chat_message("assistant"):
         with st.spinner("A processar a informação..."):
-            dados_resposta = agente_mock_resposta(prompt, perfil_ativo, telefone_simulado)
+            dados_resposta = chamada_agente(prompt, perfil_ativo, telefone_simulado)
             
             st.markdown(dados_resposta["texto"])
             
