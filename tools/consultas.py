@@ -293,3 +293,235 @@ def obter_preco(produto: str, organico: bool = False, quantidade_kg: float = 0) 
         "total": total,
         "observacao": linha["observacao"],
     }
+
+#financeiro 
+def _intervalo(periodo):
+    """Transforma o período pedido em (inicio, fim, descricao), datas inclusivas.
+
+    Aceita: None ou '' (todo o histórico), 'AAAA-MM' (um mês), 'AAAA' (um ano),
+    'AAAA-MM-DD:AAAA-MM-DD' (intervalo), nome ou abreviação de mês com ou sem ano
+    ('outubro', 'out/2026', 'setembro de 2026') e 'mes_atual' (mês da data de referência).
+    Levanta ValueError se não entender.
+    """
+    import calendar
+
+    def mes_inteiro(ano, mes):
+        ultimo = calendar.monthrange(ano, mes)[1]
+        return date(ano, mes, 1), date(ano, mes, ultimo)
+
+    if periodo is None or str(periodo).strip() == "":
+        return None, None, "todo o histórico"
+
+    p = dados.normalizar(periodo).replace(" de ", " ").replace("/", " ")
+    ref = dados.DATA_REFERENCIA
+
+    if p in ("mes atual", "mes_atual", "esse mes", "este mes"):
+        ini, fim = mes_inteiro(ref.year, ref.month)
+        return ini, fim, f"{dados.MESES[ref.month - 1]}/{ref.year}"
+
+    if ":" in p:
+        a, b = [x.strip() for x in p.split(":", 1)]
+        ini, fim = date.fromisoformat(a), date.fromisoformat(b)
+        if ini > fim:
+            raise ValueError
+        return ini, fim, f"{ini:%d/%m/%Y} a {fim:%d/%m/%Y}"
+
+    if len(p) == 7 and p[4] == "-":  # AAAA-MM
+        ano, mes = int(p[:4]), int(p[5:])
+        ini, fim = mes_inteiro(ano, mes)
+        return ini, fim, f"{dados.MESES[mes - 1]}/{ano}"
+
+    if p.isdigit() and len(p) == 4:  # AAAA
+        ano = int(p)
+        return date(ano, 1, 1), date(ano, 12, 31), str(ano)
+
+    partes = p.split()
+    nome_mes = partes[0]
+    ano = int(partes[1]) if len(partes) > 1 and partes[1].isdigit() else ref.year
+    if nome_mes in MESES_NOMES:
+        mes = MESES_NOMES[nome_mes]
+    elif nome_mes in dados.MESES:
+        mes = dados.MESES.index(nome_mes) + 1
+    else:
+        raise ValueError
+    ini, fim = mes_inteiro(ano, mes)
+    return ini, fim, f"{dados.MESES[mes - 1]}/{ano}"
+
+
+def _transacoes_do_produtor(produtor_id: str, periodo):
+    """Devolve (produtor, transações filtradas, descricao_periodo) ou {"erro": ...}."""
+    pid = str(produtor_id).strip().upper()
+    prod = dados.produtores()
+    linha = prod[prod["id"] == pid]
+    if linha.empty:
+        return {"erro": f"Produtor {produtor_id} não encontrado."}
+
+    try:
+        ini, fim, descricao = _intervalo(periodo)
+    except (ValueError, TypeError):
+        return {"erro": f"Período '{periodo}' inválido. Use, por exemplo, '2026-10', 'outubro' "
+                        "ou '2026-09-01:2026-10-31'."}
+
+    fin = dados.financeiro()
+    fin = fin[fin["produtor_id"] == pid]
+    if ini is not None:
+        fin = fin[(fin["data"].dt.date >= ini) & (fin["data"].dt.date <= fim)]
+    return linha.iloc[0], fin.sort_values("data"), descricao
+
+
+def _data_ou_none(valor):
+    return None if valor is None or str(valor) == "NaT" else valor.date().isoformat()
+
+
+def vendas_do_produtor(produtor_id: str, periodo: str = None) -> dict:
+    """Resume as vendas de um produtor no período, calculadas a partir do financeiro.
+
+    Args:
+        produtor_id: id do produtor, ex.: 'P001'. Em perfil de produtor, deve vir da sessão.
+        periodo: opcional. 'AAAA-MM' (ex.: '2026-10'), 'outubro', 'out/2026', 'mes_atual',
+                 'AAAA' ou 'AAAA-MM-DD:AAAA-MM-DD'. Vazio = todo o histórico (set-out/2026).
+
+    Returns:
+        {"produtor_id", "produtor", "periodo", "total_vendido", "total_recebido",
+        "total_pendente", "quantidade_vendas", "por_comprador", "por_produto", "vendas"},
+        com valores em reais, ou {"erro": str}. Nunca inclui CPF, PIX ou conta.
+    """
+    r = _transacoes_do_produtor(produtor_id, periodo)
+    if isinstance(r, dict):
+        return r
+    p, fin, descricao = r
+
+    pagos = fin[fin["status_pagamento"] == "pago"]
+    pendentes = fin[fin["status_pagamento"] != "pago"]
+
+    por_comprador = (fin.groupby("comprador")["valor_total"].sum().round(2)
+                     .sort_values(ascending=False))
+    por_produto = (fin.groupby("produto").agg(quantidade=("quantidade_kg", "sum"),
+                                              total=("valor_total", "sum"))
+                   .sort_values("total", ascending=False))
+
+    return {
+        "produtor_id": p["id"],
+        "produtor": p["nome_completo"],
+        "periodo": descricao,
+        "total_vendido": round(float(fin["valor_total"].sum()), 2),
+        "total_recebido": round(float(pagos["valor_total"].sum()), 2),
+        "total_pendente": round(float(pendentes["valor_total"].sum()), 2),
+        "quantidade_vendas": int(len(fin)),
+        "por_comprador": [{"comprador": c, "total": float(v)} for c, v in por_comprador.items()],
+        "por_produto": [{"produto": prod_, "quantidade": float(l["quantidade"]),
+                         "total": round(float(l["total"]), 2)}
+                        for prod_, l in por_produto.iterrows()],
+        "vendas": [{
+            "id_transacao": t["id_transacao"],
+            "data": _data_ou_none(t["data"]),
+            "comprador": t["comprador"],
+            "produto": t["produto"],
+            "quantidade": float(t["quantidade_kg"]),
+            "valor_total": float(t["valor_total"]),
+            "forma_pagamento": t["forma_pagamento"],
+            "status_pagamento": t["status_pagamento"],
+            "data_vencimento": _data_ou_none(t["data_vencimento"]),
+            "data_pagamento": _data_ou_none(t["data_pagamento"]),
+        } for _, t in fin.iterrows()],
+    }
+
+
+def saldo_a_receber(produtor_id: str, periodo: str = None) -> dict:
+    """Informa quanto um produtor ainda tem a receber (vendas com pagamento pendente).
+
+    Os vencidos são calculados pela data de vencimento comparada à data de referência,
+    e não pela observação do financeiro.
+
+    Args:
+        produtor_id: id do produtor, ex.: 'P003'. Em perfil de produtor, deve vir da sessão.
+        periodo: opcional, filtra pela data da venda (mesmos formatos de vendas_do_produtor).
+                 Vazio = todas as pendências.
+
+    Returns:
+        {"produtor_id", "produtor", "periodo", "data_referencia", "total_a_receber",
+        "total_vencido", "total_a_vencer", "pendencias": [{"id_transacao", "comprador",
+        "produto", "valor", "data_venda", "vencimento", "situacao", "dias", "observacao"}]},
+        ou {"erro": str}. Nunca inclui CPF, PIX ou conta.
+    """
+    r = _transacoes_do_produtor(produtor_id, periodo)
+    if isinstance(r, dict):
+        return r
+    p, fin, descricao = r
+    ref = dados.DATA_REFERENCIA
+
+    pendencias = []
+    total_vencido = total_a_vencer = 0.0
+    for _, t in fin[fin["status_pagamento"] != "pago"].sort_values("data_vencimento").iterrows():
+        valor = float(t["valor_total"])
+        venc = t["data_vencimento"].date()
+        dias = (venc - ref).days
+        if dias < 0:
+            situacao, total_vencido = "vencido", total_vencido + valor
+        else:
+            situacao, total_a_vencer = "a vencer", total_a_vencer + valor
+        pendencias.append({
+            "id_transacao": t["id_transacao"],
+            "comprador": t["comprador"],
+            "produto": t["produto"],
+            "valor": valor,
+            "data_venda": _data_ou_none(t["data"]),
+            "vencimento": venc.isoformat(),
+            "situacao": situacao,
+            "dias": abs(dias),  # dias de atraso (vencido) ou até vencer (a vencer)
+            "observacao": t["observacao"],
+        })
+
+    return {
+        "produtor_id": p["id"],
+        "produtor": p["nome_completo"],
+        "periodo": descricao,
+        "data_referencia": ref.isoformat(),
+        "total_a_receber": round(total_vencido + total_a_vencer, 2),
+        "total_vencido": round(total_vencido, 2),
+        "total_a_vencer": round(total_a_vencer, 2),
+        "pendencias": pendencias,
+    }
+
+
+def rastrear_lote(lote_id: str) -> dict:
+    """Mostra a rastreabilidade de um lote entregue: produtor, produto, datas e comprador.
+
+    Args:
+        lote_id: código do lote, ex.: 'LOT-2026-0089' (aceita também só o número, '0089' ou '89').
+
+    Returns:
+        {"lote_id", "produtor_id", "produtor", "produto", "quantidade", "comprador",
+        "pedido_id", "data_colheita", "data_entrega", "validade", "temperatura_transporte",
+        "inspecao_visual", "observacao"}, ou {"erro": str}. Não inclui o CPF do produtor.
+    """
+    texto = str(lote_id or "").strip().upper()
+    if not texto:
+        return {"erro": "Nenhum lote informado."}
+    if texto.isdigit():
+        texto = f"LOT-{dados.DATA_REFERENCIA.year}-{int(texto):04d}"
+
+    lotes = dados.lotes()
+    linha = lotes[lotes["lote_id"] == texto]
+    if linha.empty:
+        return {"erro": f"Lote {lote_id} não encontrado."}
+    l = linha.iloc[0]
+
+    temp = l["temperatura_transporte_c"]
+    temperatura = "ambiente" if dados.normalizar(temp) == "ambiente" else f"{temp} °C"
+
+    return {
+        "lote_id": l["lote_id"],
+        "produtor_id": l["produtor_id"],
+        "produtor": l["produtor_nome"],
+        "produto": l["produto"],
+        "quantidade": float(l["quantidade_kg"]),
+        "comprador": l["comprador"],
+        "pedido_id": l["pedido_id"],
+        "data_colheita": _data_ou_none(l["data_colheita"]),
+        "data_entrega": _data_ou_none(l["data_entrega"]),
+        "validade": _data_ou_none(l["validade"]),
+        "temperatura_transporte": temperatura,
+        "inspecao_visual": l["inspecao_visual"],
+        "observacao": l["observacao"],
+    }
