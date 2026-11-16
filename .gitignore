@@ -16,3 +16,4 @@ __pycache__/
 .idea/
 *.log
 .cache_respostas_teste.json
+assistent/.adk/
