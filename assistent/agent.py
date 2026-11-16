@@ -1,4 +1,5 @@
 from google.adk import Agent
+from tools.tools import buscar_documentos
 
 # Definição do Prompt de Sistema v1 para o Integrante 1 (Sabor da Terra)
 SYSTEM_INSTRUCTION = """
@@ -22,10 +23,8 @@ e apoiar a comunicação com os produtores rurais[cite: 9, 10].
 # Instanciação do Agente Principal (LlmAgent)
 root_agent = Agent(
     name="sabor_da_terra_agent",
-    model="gemini-3.5-flash",
-    description="Agente coordenador de atendimento e consulta documental da Sabor da Terra.",
+    model="gemini-3.5-flash-lite",
+    description="Assistente oficial da cooperativa Sabor da Terra.",
     instruction=SYSTEM_INSTRUCTION,
-    # A ferramenta de busca de documentos (RAG) desenvolvida pelo Integrante 2 
-    # será plugada aqui na lista 'tools' durante a integração.
-    tools=[], 
+    tools=[buscar_documentos],
 )
