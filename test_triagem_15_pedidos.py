@@ -1,10 +1,11 @@
 """
-Script de avaliacao e integracao do modulo de triagem (Integrante 3).
-Executa os 15 pedidos de data/pedidos.json com cache em disco e verifica
-conformidade com schema Pydantic, gabarito inicial e ausencia de dados sensiveis.
+Script de avaliacao e integracao do modulo de triagem (Integrante 3 - Etapas D2 e D3).
+Executa os 15 pedidos de data/pedidos.json com cache em disco, reaplica as validacoes
+em codigo de D2/D3 e verifica conformidade com schema Pydantic, gabarito das armadilhas
+da secao 9 e ausencia de dados sensiveis.
 
 Uso:
-    python test_triagem_15_pedidos.py             (usa cache quando disponivel)
+    python test_triagem_15_pedidos.py             (usa cache da extracao e valida regras em codigo)
     python test_triagem_15_pedidos.py --sem-cache (forca chamadas reais a API)
 """
 
@@ -15,7 +16,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from tools.triagem import TriagemResultado, _sem_acento, triar_pedido
+from tools.triagem import (
+    TriagemResultado,
+    _sem_acento,
+    aplicar_validacoes_em_codigo,
+    mascarar_saida,
+    triar_pedido,
+)
 
 RAIZ_PROJETO = Path(__file__).resolve().parent
 DATA_PATH = RAIZ_PROJETO / "data" / "pedidos.json"
@@ -34,90 +41,105 @@ GABARITO_15_PEDIDOS: Dict[str, Dict[str, Any]] = {
         "qtd_itens_esperada": 6,
         "deve_conter_alerta_data": True,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("p007", "domingo"),
     },
     "PED-2026-002": {
         "tipos_esperados": {"pedido de compra"},
         "qtd_itens_esperada": 8,
         "deve_conter_alerta_data": True,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("tercas e sextas", "abaixo da faixa"),
     },
     "PED-2026-003": {
         "tipos_esperados": {"pedido de compra"},
         "qtd_itens_esperada": 2,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": True,
+        "armadilhas_esperadas": ("lotes.csv", "pix"),
     },
     "PED-2026-004": {
         "tipos_esperados": {"pedido de compra"},
         "qtd_itens_esperada": 9,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("p008", "contrato pnae"),
     },
     "PED-2026-005": {
         "tipos_esperados": {"pedido de compra"},
         "qtd_itens_esperada": 2,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": True,
+        "armadilhas_esperadas": ("lotes.csv",),
     },
     "PED-2026-006": {
         "tipos_esperados": {"pedido de compra"},
         "qtd_itens_esperada": 4,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("nao existe contrato vigente", "capacidade", "p008"),
     },
     "PED-2026-007": {
         "tipos_esperados": {"cotacao", "pedido de compra"},
         "qtd_itens_esperada": 9,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("alerta de safra", "orcamento preliminar calculado em codigo"),
     },
     "PED-2026-008": {
         "tipos_esperados": {"cotacao", "consulta documental"},
         "qtd_itens_esperada": 2,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("p014",),
     },
     "PED-2026-009": {
         "tipos_esperados": {"cotacao"},
         "qtd_itens_esperada": 4,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("indisponibilidade de certificacao organica", "p008"),
     },
     "PED-2026-010": {
         "tipos_esperados": {"consulta documental", "cotacao"},
         "qtd_itens_esperada": 0,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("p008", "p004"),
     },
     "PED-2026-011": {
         "tipos_esperados": {"cotacao", "consulta documental"},
         "qtd_itens_esperada": 3,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("certificacao internacional", "indisponibilidade de certificacao organica"),
     },
     "PED-2026-012": {
         "tipos_esperados": {"mensagem de produtor"},
         "qtd_itens_esperada": 0,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("bancarios",),
     },
     "PED-2026-013": {
         "tipos_esperados": {"cotacao"},
         "qtd_itens_esperada": 7,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("safra de janeiro", "dap/caf", "capacidade"),
     },
     "PED-2026-014": {
         "tipos_esperados": {"notificacao oficial"},
         "qtd_itens_esperada": 0,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("cpf",),
     },
     "PED-2026-015": {
         "tipos_esperados": {"mensagem de produtor"},
         "qtd_itens_esperada": 2,
         "deve_conter_alerta_data": False,
         "deve_ter_pergunta": False,
+        "armadilhas_esperadas": ("segunda intencao", "cpf"),
     },
 }
 
@@ -154,7 +176,7 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
     cache = _carregar_cache() if usar_cache else {}
 
     print("------------------------------------------------------------")
-    print("Avaliacao da triagem nos 15 pedidos (Integrante 3)")
+    print("Avaliacao da triagem nos 15 pedidos (Integrante 3 - D2/D3)")
     print(f"Modo cache: {'ativo' if usar_cache else 'ignorado (--sem-cache)'}")
     print("------------------------------------------------------------\n")
 
@@ -168,6 +190,8 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
         "alerta_data_total": 0,
         "pergunta_ok": 0,
         "pergunta_total": 0,
+        "armadilhas_ok": 0,
+        "armadilhas_total": 0,
         "chamadas_api": 0,
         "tempo_total": 0.0,
     }
@@ -189,7 +213,15 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
             and "Falha de comunicacao com o servico de extracao." not in cache[chave].get("problemas", [])
         )
         if cache_valido:
-            triagem = cache[chave]
+            res_cache = TriagemResultado.model_validate(cache[chave])
+            res_validado = aplicar_validacoes_em_codigo(
+                res_cache,
+                msg,
+                canal=canal,
+                remetente=remetente,
+            )
+            triagem = mascarar_saida(res_validado.model_dump())
+            cache[chave] = triagem
             origem = "cache"
         else:
             triagem = triar_pedido(texto=msg, canal=canal, remetente=remetente)
@@ -255,10 +287,25 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
             else:
                 falhas.append(f"{pid}: nao gerou pergunta de esclarecimento esperada")
 
+        armadilhas_esperadas = esperado.get("armadilhas_esperadas", ())
+        if armadilhas_esperadas:
+            metricas["armadilhas_total"] += 1
+            problemas_concat = _sem_acento(" | ".join(problemas))
+            faltantes = [t for t in armadilhas_esperadas if _sem_acento(t) not in problemas_concat]
+            if not faltantes:
+                metricas["armadilhas_ok"] += 1
+                armadilha_ok = True
+            else:
+                armadilha_ok = False
+                falhas.append(f"{pid}: armadilha(s) D3 ausente(s) em 'problemas': {faltantes}")
+        else:
+            armadilha_ok = True
+
         print(
             f"[{idx:02d}/15] {pid} | origem={origem} | tempo={duracao:.2f}s | "
             f"tipo={tipo} ({'OK' if tipo_ok else 'FALHA'}) | "
             f"itens={len(itens)}/{esperado['qtd_itens_esperada']} ({'OK' if qtd_ok else 'FALHA'}) | "
+            f"regras_d3={'OK' if armadilha_ok else 'FALHA'} | "
             f"schema={'OK' if schema_ok else 'FALHA'} | vazamento={'NAO' if not vazamentos else 'SIM'}"
         )
 
@@ -266,7 +313,7 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
 
     total = metricas["total"]
     print("\n------------------------------------------------------------")
-    print("Resumo da avaliacao contra gabarito:")
+    print("Resumo da avaliacao contra gabarito (D2 + D3):")
     print("------------------------------------------------------------")
     print(f"Schema JSON valido:         {metricas['schema_valido']}/{total}")
     print(f"Sem vazamento de sensiveis: {metricas['sem_vazamento']}/{total}")
@@ -274,6 +321,7 @@ def executar_avaliacao(usar_cache: bool = True) -> None:
     print(f"Contagem de itens exata:    {metricas['qtd_itens_correta']}/{total}")
     print(f"Alertas de data:            {metricas['alerta_data_ok']}/{metricas['alerta_data_total']}")
     print(f"Perguntas de ambiguidade:   {metricas['pergunta_ok']}/{metricas['pergunta_total']}")
+    print(f"Armadilhas D3 sinalizadas:  {metricas['armadilhas_ok']}/{metricas['armadilhas_total']}")
     print(f"Chamadas reais a API:       {metricas['chamadas_api']}")
     print(f"Tempo total:                {metricas['tempo_total']:.2f}s")
 
