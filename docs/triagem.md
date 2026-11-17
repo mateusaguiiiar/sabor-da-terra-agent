@@ -37,15 +37,20 @@ resultado = triar_pedido(
 ### Execução dos testes
 
 ```bash
-# Testes unitários e de integração offline (D2, D3 e D4 - sem uso de rede/API)
+# Testes unitários e de integração offline (D2, D3, D4 e D5 - sem uso de rede/API)
 python tests/test_triagem.py
 
-# Avaliação dos 15 pedidos de data/pedidos.json com cache local em disco
+# Avaliação dos 15 pedidos de data/pedidos.json em 3 rodadas seguidas com cache local
 python test_triagem_15_pedidos.py
 
 # Avaliação forçando chamadas reais à Gemini API (ignora cache)
 python test_triagem_15_pedidos.py --sem-cache
 ```
+
+### Congelamento do Prompt e do Schema (Etapa D5 — 17/11/2026)
+
+- **Schema congelado (`VERSAO_SCHEMA_TRIAGEM = "1.0.0"`):** `ItemPedido` e `TriagemResultado` estão configurados com `ConfigDict(extra="forbid", validate_assignment=True)`, bloqueando qualquer campo extra fora do contrato acordado na Seção 3 e Seção 7 do Plano de Execução (`CAMPOS_ITEM_PEDIDO` e `CAMPOS_TRIAGEM_RESULTADO`).
+- **Prompt congelado (`VERSAO_PROMPT_TRIAGEM = "1.0.0"`):** `PROMPT_SISTEMA_TRIAGEM` utiliza exemplos sintéticos e delimitadores `<mensagem>...</mensagem>`, com verificação de integridade via hash SHA-256 em `obter_metadados_congelamento()`.
 
 ---
 
@@ -105,8 +110,9 @@ Mensagem Bruta (texto, canal, remetente)
 ### 2.5 Resultados da Avaliação da Triagem
 
 Nos testes automatizados executados sobre o módulo:
-- **Testes unitários e de integração (`tests/test_triagem.py`):** `10/10` aprovados cobrindo normalização sem chutes, cálculo de datas em código, consistência de dia da semana, mascaramento de dados sensíveis, safra, certificação orgânica, contratos (Raízes, Mercado Bom Preço e PNAE), integração nos pedidos `001`, `006`, `012` e `015`, idioma inglês (`PED-011`), checklist ADAGRO (`PED-014`) e proteção contra injeção de comandos.
-- **Conjunto dos 15 pedidos (`test_triagem_15_pedidos.py`):**
+- **Testes unitários e de integração (`tests/test_triagem.py`):** `11/11` aprovados cobrindo normalização sem chutes, cálculo de datas em código, consistência de dia da semana, mascaramento de dados sensíveis, safra, certificação orgânica, contratos (Raízes, Mercado Bom Preço e PNAE), integração nos pedidos `001`, `006`, `012` e `015`, idioma inglês (`PED-011`), checklist ADAGRO (`PED-014`), proteção contra injeção de comandos e verificação de congelamento de schema/prompt (D5).
+- **Conjunto dos 15 pedidos em 3 rodadas seguidas (`test_triagem_15_pedidos.py`):**
+  - Rodadas consecutivas com 100% de JSON válido e gabarito aprovado: `3/3` (`45/45` execuções — `100%`)
   - Schema JSON válido: `15/15` (`100%`)
   - Ausência de vazamento de dados sensíveis (CPF, conta, agência, PIX): `15/15` (`100%`)
   - Classificação do tipo de mensagem: `15/15` (`100%`)

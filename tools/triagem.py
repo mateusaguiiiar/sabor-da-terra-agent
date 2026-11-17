@@ -1,8 +1,8 @@
 """
-Modulo de triagem e interpretacao de pedidos (Integrante 3 - Etapas D2, D3 e D4).
+Modulo de triagem e interpretacao de pedidos (Integrante 3 - Etapas D2, D3, D4 e D5).
 Projeto Sabor da Terra.
 
-Contrato:
+Contrato congelado (D5 - 17/11/2026):
     triar_pedido(
         texto: str,
         canal: Optional[str] = None,
@@ -12,6 +12,7 @@ Contrato:
 """
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -26,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from tools import consultas as _consultas_ext
@@ -64,10 +65,49 @@ RE_PIX = re.compile(
 
 
 # ==============================================================================
-# 1. Schemas de Dados (Pydantic)
+# 1. Schemas de Dados (Pydantic) — Congelados na Etapa D5 (17/11/2026)
 # ==============================================================================
 
+VERSAO_SCHEMA_TRIAGEM = "1.0.0"
+VERSAO_PROMPT_TRIAGEM = "1.0.0"
+
+CAMPOS_ITEM_PEDIDO = (
+    "produto_normalizado",
+    "quantidade",
+    "unidade",
+    "observacao",
+    "exige_organico",
+)
+
+CAMPOS_TRIAGEM_RESULTADO = (
+    "tipo_mensagem",
+    "comprador",
+    "canal",
+    "itens",
+    "prazo",
+    "urgencia",
+    "justificativa_urgencia",
+    "problemas",
+    "confianca",
+    "perguntas_de_esclarecimento",
+)
+
+TIPOS_MENSAGEM_VALIDOS = (
+    "pedido de compra",
+    "cotacao",
+    "consulta documental",
+    "mensagem de produtor",
+    "notificacao oficial",
+    "outro",
+)
+
+NIVEIS_URGENCIA_VALIDOS = ("alta", "media", "baixa")
+NIVEIS_CONFIANCA_VALIDOS = ("alta", "media", "baixa")
+
+
 class ItemPedido(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
     produto_normalizado: str = Field(
         description="Nome do produto padronizado conforme catalogo, mantendo termos genericos quando ambiguos."
     )
@@ -90,6 +130,8 @@ class ItemPedido(BaseModel):
 
 
 class TriagemResultado(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
     tipo_mensagem: str = Field(
         description=(
             "Classificacao principal: 'pedido de compra', 'cotacao', "
@@ -484,6 +526,7 @@ def normalizar_nome_produto(nome_bruto: str) -> str:
     """
     Normaliza o nome do produto por correspondencia exata com o catalogo ou sinonimos nao ambiguos.
     Termos genericos/ambiguos (ex: 'queijo', 'manteiga', 'cheiro verde') permanecem inalterados.
+    Remove qualificadores de certificacao ('organico', 'convencional') quando acoplados ao nome do produto.
     """
     if not nome_bruto:
         return ""
@@ -499,6 +542,18 @@ def normalizar_nome_produto(nome_bruto: str) -> str:
 
     if chave in MAPA_SINONIMOS:
         return MAPA_SINONIMOS[chave]
+
+    # Se o modelo anexou 'organico'/'organica'/'convencional' ao nome de um produto do catalogo
+    chave_sem_qualif = re.sub(
+        r"\b(com certificacao organica|certificado organico|organico|organica|convencional|artesanal)\b",
+        "",
+        chave,
+    )
+    chave_sem_qualif = " ".join(chave_sem_qualif.replace("()", "").split())
+    if chave_sem_qualif in mapa_catalogo:
+        return mapa_catalogo[chave_sem_qualif]
+    if chave_sem_qualif in MAPA_SINONIMOS:
+        return MAPA_SINONIMOS[chave_sem_qualif]
 
     return " ".join(nome_bruto.strip().split())
 
@@ -1509,12 +1564,46 @@ def validar_nao_compra_e_roteamento(
             if prod_norm == "queijo coalho":
                 demandas = _consultar_demanda_pendente_pedidos("queijo coalho")
                 if demandas:
+                    qtd_desc = (
+                        f"{item.quantidade:g} {item.unidade or 'kg'}"
+                        if item.quantidade is not None
+                        else "quantidade nao informada"
+                    )
                     alertas.append(
-                        f"Cruzamento de estoque ({item.produto_normalizado}, {item.quantidade:g} kg ofertados por {pid_str}): "
+                        f"Cruzamento de estoque ({item.produto_normalizado}, {qtd_desc} ofertados por {pid_str}): "
                         f"ha pedidos/cotacoes pendentes para queijo coalho: {', '.join(demandas)}."
                     )
 
     return alertas
+
+
+def _normalizar_campos_schema(res: TriagemResultado) -> None:
+    """
+    Garante que os campos enumerados ('tipo_mensagem', 'urgencia', 'confianca')
+    estejam estritamente dentro do vocabulario congelado do schema (sem acentos ou variacoes).
+    """
+    tipo_norm = _sem_acento(res.tipo_mensagem)
+    mapa_tipos = {
+        "pedido de compra": "pedido de compra",
+        "compra": "pedido de compra",
+        "pedido": "pedido de compra",
+        "cotacao": "cotacao",
+        "orcamento": "cotacao",
+        "consulta documental": "consulta documental",
+        "consulta": "consulta documental",
+        "mensagem de produtor": "mensagem de produtor",
+        "produtor": "mensagem de produtor",
+        "notificacao oficial": "notificacao oficial",
+        "notificacao": "notificacao oficial",
+        "outro": "outro",
+    }
+    res.tipo_mensagem = mapa_tipos.get(tipo_norm, "outro")
+
+    urg_norm = _sem_acento(res.urgencia)
+    res.urgencia = urg_norm if urg_norm in NIVEIS_URGENCIA_VALIDOS else "media"
+
+    conf_norm = _sem_acento(res.confianca)
+    res.confianca = conf_norm if conf_norm in NIVEIS_CONFIANCA_VALIDOS else "alta"
 
 
 def normalizar_itens_e_intencoes(
@@ -1562,9 +1651,21 @@ def normalizar_itens_e_intencoes(
     produtos_segunda_intencao: List[str] = []
 
     for item in res.itens:
+        nome_bruto_norm = _sem_acento(item.produto_normalizado)
+        obs_norm = _sem_acento(item.observacao or "")
+
+        if (
+            ("organico" in nome_bruto_norm or "organica" in nome_bruto_norm)
+            and "preferencialmente" not in obs_norm
+            and "preferencia" not in obs_norm
+        ):
+            item.exige_organico = True
+
+        if item.quantidade is not None and item.quantidade <= 0:
+            item.quantidade = None
+
         item.produto_normalizado = normalizar_nome_produto(item.produto_normalizado)
         prod_norm = _sem_acento(item.produto_normalizado)
-        obs_norm = _sem_acento(item.observacao or "")
 
         if prod_norm in ITENS_PLACEHOLDER_CATALOGO and item.quantidade is None:
             continue
@@ -1680,7 +1781,10 @@ def aplicar_validacoes_em_codigo(
     remetente: Optional[str] = None,
     data_referencia: Optional[str] = None,
 ) -> TriagemResultado:
-    """Aplica todas as validacoes deterministicas de D2, D3 e D4 em codigo Python sobre a extracao."""
+    """Aplica todas as validacoes deterministicas de D2, D3, D4 e D5 em codigo Python sobre a extracao."""
+    # 0. Normalizacao estrita dos campos enumerados do schema congelado (D5)
+    _normalizar_campos_schema(res)
+
     if not res.canal and canal:
         res.canal = canal
     if not res.comprador and remetente:
@@ -1751,7 +1855,7 @@ def aplicar_validacoes_em_codigo(
 
 
 # ==============================================================================
-# 6. Prompt de Extracao (Exemplos Sinteticos, Dados Delimitados)
+# 6. Prompt de Extracao (Congelado na Etapa D5 - Exemplos Sinteticos)
 # ==============================================================================
 
 PROMPT_SISTEMA_TRIAGEM = """Voce e o modulo de triagem e extracao estruturada da Cooperativa Sabor da Terra.
@@ -1794,6 +1898,25 @@ Saida esperada:
 """
 
 
+def obter_metadados_congelamento() -> Dict[str, Any]:
+    """
+    Retorna os metadados e hashes SHA-256 do schema e do prompt congelados na Etapa D5 (17/11/2026).
+    Utilizado pelos testes automatizados para verificar a integridade do contrato.
+    """
+    schema_json = json.dumps(TriagemResultado.model_json_schema(), sort_keys=True, ensure_ascii=False)
+    hash_schema = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
+    hash_prompt = hashlib.sha256(PROMPT_SISTEMA_TRIAGEM.encode("utf-8")).hexdigest()
+    return {
+        "versao_schema": VERSAO_SCHEMA_TRIAGEM,
+        "versao_prompt": VERSAO_PROMPT_TRIAGEM,
+        "campos_triagem_resultado": CAMPOS_TRIAGEM_RESULTADO,
+        "campos_item_pedido": CAMPOS_ITEM_PEDIDO,
+        "tipos_mensagem_validos": TIPOS_MENSAGEM_VALIDOS,
+        "hash_schema_sha256": hash_schema,
+        "hash_prompt_sha256": hash_prompt,
+    }
+
+
 # ==============================================================================
 # 7. Funcao Principal: triar_pedido
 # ==============================================================================
@@ -1821,14 +1944,15 @@ def triar_pedido(
         problemas, confianca e perguntas_de_esclarecimento (sem dados sensiveis).
     """
     if not texto or not texto.strip():
-        return TriagemResultado(
+        vazio = TriagemResultado(
             tipo_mensagem="outro",
             comprador=remetente,
             canal=canal,
             urgencia="baixa",
             problemas=["Mensagem vazia recebida."],
             confianca="baixa",
-        ).model_dump()
+        )
+        return mascarar_saida(vazio.model_dump())
 
     client = _obter_cliente()
 

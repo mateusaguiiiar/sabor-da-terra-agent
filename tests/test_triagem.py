@@ -1,22 +1,28 @@
 """
-Testes unitarios e de integracao offline do modulo de triagem (Integrante 3 - Etapas D2, D3 e D4).
+Testes unitarios e de integracao offline do modulo de triagem (Integrante 3 - Etapas D2, D3, D4 e D5).
 Nao realizam chamadas a API externa e nao dependem de rede.
 """
 
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 RAIZ_PROJETO = Path(__file__).resolve().parent.parent
 if str(RAIZ_PROJETO) not in sys.path:
     sys.path.insert(0, str(RAIZ_PROJETO))
 
 from tools.triagem import (
+    CAMPOS_ITEM_PEDIDO,
+    CAMPOS_TRIAGEM_RESULTADO,
     ItemPedido,
     TriagemResultado,
     aplicar_validacoes_em_codigo,
     calcular_prazo_em_codigo,
     mascarar_saida,
     normalizar_nome_produto,
+    obter_metadados_congelamento,
+    triar_pedido,
     validar_consistencia_data_semana,
     validar_dados_sensiveis,
 )
@@ -381,6 +387,64 @@ def test_mensagens_nao_compra_ingles_e_seguranca_d4():
     assert any("alerta de seguranca" in p.lower() for p in res_injecao.problemas)
 
 
+def test_congelamento_schema_e_prompt_e_correcoes_d5():
+    # 1. Verifica contrato congelado (campos exatos e bloqueio de campos extras)
+    assert tuple(ItemPedido.model_fields.keys()) == CAMPOS_ITEM_PEDIDO
+    assert tuple(TriagemResultado.model_fields.keys()) == CAMPOS_TRIAGEM_RESULTADO
+
+    meta = obter_metadados_congelamento()
+    assert meta["versao_schema"] == "1.0.0"
+    assert meta["versao_prompt"] == "1.0.0"
+    assert len(meta["hash_schema_sha256"]) == 64
+    assert len(meta["hash_prompt_sha256"]) == 64
+
+    try:
+        TriagemResultado(tipo_mensagem="pedido de compra", campo_invalido="nao permitido")
+        raise AssertionError("Deveria rejeitar campo extra fora do contrato congelado")
+    except ValidationError:
+        pass
+
+    # 2. Normalizacao de enumeracoes ('Cotação' -> 'cotacao', 'Média' -> 'media') e sufixo 'organico' no item
+    res_variacao = aplicar_validacoes_em_codigo(
+        TriagemResultado(
+            tipo_mensagem="Cotação",
+            comprador="Cliente Teste",
+            itens=[
+                ItemPedido(
+                    produto_normalizado="mel silvestre orgânico",
+                    quantidade=10.0,
+                    unidade="kg",
+                    exige_organico=False,
+                )
+            ],
+            urgencia="Média",
+            confianca="Média",
+        ),
+        "Preciso de cotação para 10kg de mel silvestre orgânico.",
+    )
+    assert res_variacao.tipo_mensagem == "cotacao"
+    assert res_variacao.urgencia == "media"
+    assert res_variacao.confianca == "media"
+    assert res_variacao.itens[0].produto_normalizado == "mel silvestre"
+    assert res_variacao.itens[0].exige_organico is True
+
+    # 3. Oferta de produtor com quantidade=None nao deve disparar TypeError na formatacao
+    res_prod_sem_qtd = aplicar_validacoes_em_codigo(
+        TriagemResultado(
+            tipo_mensagem="mensagem de produtor",
+            comprador="Cícero",
+            itens=[ItemPedido(produto_normalizado="queijo coalho", quantidade=None, unidade="kg")],
+        ),
+        "Tenho queijo coalho disponível, tem pedido?",
+        remetente="(87) 99745-1098",
+    )
+    assert any("cruzamento de estoque" in p.lower() for p in res_prod_sem_qtd.problemas)
+
+    # 4. Mensagem vazia com remetente contendo CPF passa por mascaramento
+    saida_vazia = triar_pedido("", canal="whatsapp", remetente="Cliente CPF 432.198.765-01")
+    assert "432.198.765-01" not in str(saida_vazia)
+
+
 if __name__ == "__main__":
     testes = [
         test_normalizacao_produtos,
@@ -393,6 +457,7 @@ if __name__ == "__main__":
         test_validacao_contrato_mercado_bom_preco,
         test_integracao_pedidos_001_006_015_e_012,
         test_mensagens_nao_compra_ingles_e_seguranca_d4,
+        test_congelamento_schema_e_prompt_e_correcoes_d5,
     ]
     for fn in testes:
         fn()
