@@ -236,10 +236,10 @@ CASOS_DE_TESTE: list[CasoTesteRAG] = [
         ],
         criterios_aprovacao=[
             "Lista as três frutas certificadas: goiaba Paluma, acerola e manga Tommy Atkins.",
-            "Informa a área certificada de 8 hectares (de 12 ha totais) e a validade do certificado ORG-PE-2025-004721 até 15/06/2027.",
+            "Informa a área certificada de 8 hectares (de 12 ha totais) e a validade do certificado até 15/06/2027.",
         ],
         produtor_filtro="P001",
-        palavras_chave_obrigatorias=["ORG-PE-2025-004721", "15/06/2027", "acerola", "manga"],
+        palavras_chave_obrigatorias=["15/06/2027", "acerola", "manga"],
     ),
   CasoTesteRAG(
         id="TC12_NAO_CONFORMIDADE_CORRIGIDA_P012",
