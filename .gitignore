@@ -1,8 +1,26 @@
+# Arquivos de ambiente e chaves secretas
+.env
+
+# Ambientes virtuais Python
+.venv/
+venv/
+ENV/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configurações e caches de editores (VS Code, etc.)
+.vscode/
+.idea/
+*.log
+.cache_respostas_teste.json
+assistent/.adk/
+
 
 dados/chroma/
 __pycache__/
 *.pyc
 .pytest_cache/
-.env
-.venv/
 eval/relatorio_*.txt
