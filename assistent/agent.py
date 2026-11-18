@@ -3,6 +3,14 @@ from google.adk import Agent
 from google.genai import types
 
 from .callbacks import after_model_logger, before_model_guard, log_tool_execution
+from tools.tools import buscar_documentos
+from tools.triagem import triar_pedido
+from tools.consultas import (
+    consultar_produtores,
+    verificar_certificacao,
+    verificar_sazonalidade,
+    obter_preco,
+)
 
 MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
@@ -14,16 +22,16 @@ localizada no Agreste Meridional de Pernambuco.
 Classifique internamente a intenção do usuário e siga estritamente a rota correspondente:
 
 1. **Triagem de Pedidos (compras, encomendas, cotações de clientes):**
-   - Use a ferramenta `triar_pedido` para estruturar produtos, quantidades, prazos e alertas.
+   - Use a ferramenta `triar_pedido` para estruturar produtos, quantidades, prazos e alertas, e `obter_preco` para cotações.
    - Nunca calcule preços, datas ou saldos de cabeça; confie apenas nos retornos das ferramentas.
 
 2. **Consulta à Base Documental (certificações, laudos ADAGRO, contratos, fichas técnicas, sazonalidade):**
-   - Use `buscar_documentos` (e `verificar_certificacao` / `verificar_sazonalidade` quando disponíveis).
+   - Use `buscar_documentos`, `verificar_certificacao` e `verificar_sazonalidade`.
    - Sempre cite o arquivo e a seção de onde a informação foi extraída.
    - Se a informação não constar nos documentos retornados, responda exatamente: "Não encontrei essa informação nos documentos."
 
-3. **Comunicação e Consulta de Produtores (vendas, saldo a receber, rastreabilidade de lote, notificações):**
-   - Use `vendas_do_produtor`, `saldo_a_receber`, `rastrear_lote`, `gerar_resumo_produtor` ou `gerar_notificacao_novo_pedido`.
+3. **Comunicação e Consulta de Produtores (produtores ativos, vendas, saldo a receber, rastreabilidade de lote):**
+   - Use `consultar_produtores` (e demais ferramentas de consulta do produtor quando disponíveis).
    - Respeite o perfil de acesso: um produtor só pode consultar os próprios dados financeiros. Recuse pedidos de dados de terceiros.
 
 4. **Mensagens Gerais, Ambiguidade ou Fora de Escopo:**
@@ -60,7 +68,12 @@ root_agent = Agent(
     before_model_callback=before_model_guard,
     after_model_callback=after_model_logger,
     before_tool_callback=log_tool_execution,
-    # Mocks atuais; amanhã serão substituídos pelas funções reais dos Integrantes 2, 3 e 4
-    tools=[],
+    tools=[
+        buscar_documentos,
+        triar_pedido,
+        consultar_produtores,
+        verificar_certificacao,
+        verificar_sazonalidade,
+        obter_preco,
+    ],
 )
-

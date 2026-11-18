@@ -1,5 +1,6 @@
 import re
 from typing import Any, Dict, Optional
+from tools.mascarar import mascarar
 
 # Tools that expose private financial/sales data of a specific producer
 SENSITIVE_PRODUCER_TOOLS = {
@@ -30,6 +31,7 @@ def mask_sensitive_text(text: str) -> str:
 
     text = CPF_PATTERN.sub(_mask_cpf, text)
     text = BANK_ACCOUNT_PATTERN.sub(r"\1: [DADO MASCARADO]", text)
+    text = mascarar(text)
     return text
 
 
@@ -44,11 +46,11 @@ def check_access_permission(
     if tool_name not in SENSITIVE_PRODUCER_TOOLS:
         return None
 
-    perfil = state.get("perfil", "equipe")  # Default 'equipe' when running via CLI
-    logged_produtor_id = str(state.get("produtor_id", "")).strip()
+    perfil = str(state.get("perfil", "equipe")).strip().lower()
+    logged_produtor_id = str(state.get("produtor_id", "")).strip().upper()
     requested_id = str(
-        args.get("produtor_id") or args.get("id_produtor") or args.get("produtor") or ""
-    ).strip()
+    args.get("produtor_id") or args.get("id_produtor") or args.get("produtor") or ""
+    ).strip().upper()
 
     if perfil == "produtor":
         if not logged_produtor_id:
