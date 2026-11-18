@@ -1,3 +1,4 @@
+from .security import check_access_permission, mask_sensitive_text
 import hashlib
 import json
 import logging
@@ -82,23 +83,56 @@ def before_model_guard(
 def after_model_logger(
     callback_context: CallbackContext, llm_response: LlmResponse
 ) -> Optional[LlmResponse]:
-    """Logs model output and saves text responses to test cache when enabled."""
+    """Logs model output, masks leaked PII, and saves test cache when enabled."""
     if not llm_response.content or not llm_response.content.parts:
         return None
 
-    text_parts = [p.text for p in llm_response.content.parts if p.text]
-    tool_calls = [p.function_call.name for p in llm_response.content.parts if p.function_call]
-
+    tool_calls = [
+        p.function_call.name for p in llm_response.content.parts if p.function_call
+    ]
     if tool_calls:
         logger.info(f"Modelo solicitou ferramentas: {tool_calls}")
+
+    modified = False
+    new_parts = []
+    text_parts = []
+
+    for part in llm_response.content.parts:
+        if part.text:
+            sanitized = mask_sensitive_text(part.text)
+            if sanitized != part.text:
+                logger.warning("[SEGURANÇA] Dado sensível mascarado na resposta final.")
+                modified = True
+            new_parts.append(types.Part(text=sanitized))
+            text_parts.append(sanitized)
+        else:
+            new_parts.append(part)
+
     if text_parts:
         final_text = "".join(text_parts)
         logger.info(f"Resposta gerada ({len(final_text)} chars).")
 
+        if USE_TEST_CACHE and not tool_calls:
+            req_key = callback_context.state.get("temp:last_req_key")
+            if req_key:
+                cache = _load_cache()
+                cache[req_key] = final_text
+                _save_cache(cache)
+
+    if modified:
+        return LlmResponse(
+            content=types.Content(role="model", parts=new_parts)
+        )
     return None
 
 
-def log_tool_execution(tool, args: dict, tool_context) -> None:
-    """Logs every tool invocation and its arguments before execution."""
+def log_tool_execution(tool, args: dict, tool_context) -> Optional[dict]:
+    """Logs tool invocation and enforces role-based access control."""
     logger.info(f"[TOOL CALL] Executando '{tool.name}' com args={args}")
+
+    denied = check_access_permission(tool.name, args, tool_context.state)
+    if denied:
+        logger.warning(f"[ACESSO NEGADO] Bloqueada chamada para '{tool.name}': {denied}")
+        return denied
+
     return None
