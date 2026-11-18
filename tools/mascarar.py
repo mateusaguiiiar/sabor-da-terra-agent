@@ -3,12 +3,13 @@
 Use mascarar() em TODO texto que vai para o usuário: respostas do agente,
 trechos devolvidos pelo RAG, resumos e notificações.
 
-Funciona em duas camadas:
-1. Valores conhecidos: todo CPF, conta corrente e chave PIX que existe nos
-   CSVs da cooperativa é ocultado onde aparecer, em qualquer formato de texto.
-   Isso pega também chaves PIX que são e-mail ou telefone.
-2. Padrões (regex): CPFs em geral (inclusive de pessoas fora do cadastro),
-   números depois de "agência"/"conta" e valores depois de "pix".
+Funciona em duas camadas, nesta ordem:
+1. Padrões (regex): CPFs em geral (inclusive de pessoas fora do cadastro),
+   números depois de "agência"/"conta" e valores depois de "pix". Cada tipo
+   ganha a sua marcação: '***.***.***-**', 'agência ****', 'conta ****', 'pix [oculto]'.
+2. Valores conhecidos: todo CPF, conta corrente e chave PIX que existe nos
+   CSVs da cooperativa e ainda sobrou no texto vira '[oculto]', em qualquer
+   formato. Isso pega chaves PIX que são e-mail ou telefone, sem a palavra "pix".
 
 Nenhuma das duas camadas é perfeita sozinha. A regra principal continua
 sendo: as funções de consulta não devolvem colunas sensíveis.
@@ -82,13 +83,16 @@ def mascarar(texto: str) -> str:
         return ""
     texto = str(texto)
 
-    for valor in _valores_conhecidos():
-        texto = texto.replace(valor, OCULTO)
-
+    # 1. Padrões primeiro: deixam a marcação no formato de cada tipo de dado
     texto = RE_PIX.sub(lambda m: f"{m.group(1) or ''}pix {OCULTO}", texto)
     texto = RE_AGENCIA.sub(lambda m: f"{m.group(1)} ****", texto)
     texto = RE_CONTA.sub(lambda m: f"{m.group(1)} ****", texto)
     texto = RE_CPF.sub("***.***.***-**", texto)
+
+    # 2. Depois, o que sobrou do cadastro (ex.: chave PIX que é e-mail ou telefone,
+    #    escrita sem a palavra "pix" perto)
+    for valor in _valores_conhecidos():
+        texto = texto.replace(valor, OCULTO)
     return texto
 
 

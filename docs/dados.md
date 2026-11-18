@@ -84,9 +84,32 @@ Uma coluna por mês (`jan` a `dez`) com o nível: `alta`, `media`, `baixa` ou `n
    | tapioca, goma | tapioca/goma | tapioca/goma |
    | mel de abelha jandaíra | mel de jandaíra | mel de jandaíra |
 
-   Tratamento: tabela de sinônimos nas funções de consulta.
+   Tratamento (`tools/consultas.py`): a busca de produto tenta, nesta ordem, um **sinônimo** (`banana` -> `banana prata`, `tomate` -> `tomate santa cruz`, `aipim` -> `macaxeira`...), o **nome exato** e por fim os nomes que **contêm todas as palavras** pedidas, preferindo os que começam com a mesma palavra (`goiaba` -> `goiaba paluma`, não `doce de goiaba`). Se sobrar mais de uma opção (`goiaba` na tabela de preços: extra ou especial; `queijo`: coalho ou manteiga), a função devolve erro de **produto ambíguo** com as opções, em vez de escolher sozinha.
 3. **Produtos sem sazonalidade nem preço:** feijão, milho e fava (só do P015, que está inativo).
 4. **`quantidade_kg` nem sempre é kg.** Alface vem em unidades, coentro e couve em maços e ovos em dúzias (a `observacao` avisa). A unidade certa está na tabela de preços.
 5. **Pendências vencidas.** Na data de referência, 5 transações pendentes já passaram do vencimento (P002, P004 e P003). Só as do P003 estão marcadas `ATRASADO - cobrar` na observação. O atraso deve ser calculado pela data, não pela observação.
 6. **Certificações:** P008 (Josefa) vencida em 2026-09-30. P004 (Ana Lúcia) vence em 2026-12-01.
 7. **Dados sensíveis espalhados.** CPF aparece em produtores, financeiro e lotes; chaves PIX são às vezes e-mail ou telefone. As funções nunca devolvem essas colunas (`dados.sem_sensiveis()`), e todo texto passa por `mascarar()`.
+
+## Regras de negócio adotadas
+
+**Erros.** Toda função de consulta devolve `{"erro": "mensagem"}` quando o produtor, o produto ou o mês não existe, ou quando o produto é ambíguo. Nunca inventa uma resposta.
+
+**Safra (`verificar_sazonalidade`).** Os níveis `nenhuma` e `baixa` geram alerta; `media` e `alta`, não.
+- `nenhuma`: "fora de safra, não há produção".
+- `baixa`: "baixa disponibilidade (pode estar fora de safra), confirmar com o produtor".
+
+Motivo: o critério de aceite do plano cita a goiaba, marcada como `baixa` no período que a observação chama de "fora de safra". **Inconsistência encontrada:** no CSV, a goiaba paluma é `baixa` em **mai, jun e jul**, e `media` em agosto, mas a observação diz "Fora de safra jun-ago". A função segue o nível da tabela, e a observação é devolvida junto para o agente mostrar.
+
+**Certificação (`verificar_certificacao`).** Inválida quando o produtor não tem certificação, quando a validade é anterior à data de referência ou quando ele não produz o produto informado. Válida com aviso quando vence em até 60 dias (caso da P004, que vence em 01/12/2026).
+
+**Preço (`obter_preco`).** `total = preço unitário x quantidade x (1 - desconto/100)`. O desconto de atacado só vale quando a quantidade é **maior ou igual** ao volume mínimo da tabela. Produto sem preço na versão pedida (ex.: banana prata orgânica, `n/d`) devolve erro, nunca preço zero. Conferência: queijo coalho convencional, 120 kg -> 32,00 x 120 x 0,95 = **R$ 3.648,00**.
+
+**Vendas e saldo (`vendas_do_produtor`, `saldo_a_receber`).**
+- Calculados só a partir do `financeiro.csv`. "Recebido" = `status_pagamento` `pago`; "pendente" = qualquer outro status.
+- O `periodo` filtra pela **data da venda** (coluna `data`). Formatos aceitos: vazio (todo o histórico), `AAAA-MM`, `AAAA`, `AAAA-MM-DD:AAAA-MM-DD`, nome ou abreviação do mês com ou sem ano (`outubro`, `out/2026`) e `mes_atual` (mês da data de referência).
+- Uma pendência é **vencida** quando a data de vencimento é anterior à data de referência, independentemente da observação (só o P003 tem `ATRASADO - cobrar`, mas P002 e P004 também estão vencidos).
+- Conferência manual (data de referência 30/10/2026): P001 vendeu R$ 1.090,00, tudo pago e tudo em setembro (em outubro, zero); P003 vendeu R$ 7.460,00 e tem R$ 6.020,00 vencidos há 12 dias; P004 tem R$ 1.020,00 vencidos há 7 dias; P007 vendeu R$ 3.155,00 e tem R$ 2.480,00 a vencer em 40 dias.
+- **Autorização:** as funções recebem o `produtor_id` como parâmetro. No perfil Produtor, esse id deve vir da sessão (telefone), e não do modelo, para um produtor não consultar o saldo de outro (responsabilidade do agente, Integrante 1).
+
+**Lotes (`rastrear_lote`).** Aceita o código completo (`LOT-2026-0089`) ou só o número (`89`). A temperatura vem como `ambiente` ou em °C. O `quantidade` segue a unidade do produto (ver problema 4).
