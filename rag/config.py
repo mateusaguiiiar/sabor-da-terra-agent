@@ -4,7 +4,7 @@ from pathlib import Path
 PASTA_RAIZ = Path(__file__).resolve().parent.parent
 
 
-PASTA_DADOS = PASTA_RAIZ / "dados"
+PASTA_DADOS = PASTA_RAIZ / "data"
 PASTA_CHROMA = PASTA_DADOS / "chroma"
 
 # Pastas com os documentos que entram na busca
