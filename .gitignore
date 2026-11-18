@@ -1,8 +1,5 @@
-
-dados/chroma/
 __pycache__/
 *.pyc
 .pytest_cache/
 .env
 .venv/
-eval/relatorio_*.txt

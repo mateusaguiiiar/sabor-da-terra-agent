@@ -33,15 +33,21 @@ def gemini_falso(monkeypatch):
     monkeypatch.delenv("SABOR_SEM_LLM", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "chave-de-teste")
     comunicacao._chamar_gemini.cache_clear()
-    respostas = {}
+    respostas = {"chamadas": []}
 
-    def falso(prompt):
+    def falso(prompt, modelo=None):
+        respostas["chamadas"].append(modelo)
         r = respostas["texto"]
+        if callable(r) and not isinstance(r, Exception):
+            r = r(modelo)
         if isinstance(r, Exception):
             raise r
         return r
 
     monkeypatch.setattr(comunicacao, "_chamar_gemini", falso)
+    # Nomes fixos: o teste não pode depender do .env de quem roda
+    monkeypatch.setattr(comunicacao, "MODELO", "modelo-principal-teste")
+    monkeypatch.setattr(comunicacao, "MODELO_RESERVA", "modelo-reserva-teste")
     monkeypatch.setattr(comunicacao.time, "sleep", lambda s: None)  # não esperar nos testes
     return respostas
 
@@ -162,3 +168,28 @@ def test_resumo_aceita_formato_diferente_mas_rejeita_valor_errado(gemini_falso):
     assert gerar_resumo_produtor("P003")["origem"] == "gemini"      # mesmo valor, outro formato
     gemini_falso["texto"] = "Oi, Cícero! Vendas de R$ 9999,00."
     assert gerar_resumo_produtor("P003")["origem"] == "texto_padrao"  # valor inventado
+
+
+def test_resumo_503_usa_modelo_de_reserva(gemini_falso):
+    # O modelo principal está sobrecarregado (503); o de reserva responde
+    def por_modelo(modelo):
+        if modelo == comunicacao.MODELO:
+            return Exception("503 UNAVAILABLE. This model is currently experiencing high demand.")
+        return "Oi, Cícero! Você tem R$ 6.020,00 a receber."
+    gemini_falso["texto"] = por_modelo
+    r = gerar_resumo_produtor("P003")
+    assert r["origem"] == "gemini"
+    assert gemini_falso["chamadas"] == [comunicacao.MODELO, comunicacao.MODELO, comunicacao.MODELO_RESERVA]
+
+
+def test_resumo_503_em_tudo_usa_texto_padrao(gemini_falso):
+    gemini_falso["texto"] = Exception("503 UNAVAILABLE")
+    r = gerar_resumo_produtor("P003")
+    assert r["origem"] == "texto_padrao"
+    assert len(gemini_falso["chamadas"]) == 3  # nunca mais de 3 chamadas
+
+
+def test_erro_definitivo_nao_tenta_de_novo(gemini_falso):
+    gemini_falso["texto"] = Exception("400 API key not valid")
+    assert gerar_resumo_produtor("P003")["origem"] == "texto_padrao"
+    assert len(gemini_falso["chamadas"]) == 1

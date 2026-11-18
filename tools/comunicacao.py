@@ -13,7 +13,9 @@ Como funciona cada texto:
 
 Configuração (.env):
     GEMINI_API_KEY ou GOOGLE_API_KEY  chave do Google AI Studio
-    GEMINI_MODEL                      modelo (padrão: gemini-3.8-flash; confirmar no AI Studio)
+    GEMINI_MODEL                      modelo principal (padrão: gemini-3.8-flash)
+    GEMINI_MODEL_RESERVA              modelo usado se o principal estiver sobrecarregado
+                                      (padrão: gemini-3.5-flash-lite)
     SABOR_SEM_LLM=1                   desliga o Gemini (usa sempre o texto montado em código)
 """
 
@@ -40,6 +42,8 @@ except ImportError:
     pass
 
 MODELO = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODELO_RESERVA = os.getenv("GEMINI_MODEL_RESERVA", "gemini-3.5-flash-lite")
+TEMPO_LIMITE_MS = 30_000  # desiste da chamada depois de 30 s
 TAMANHO_MAXIMO = 1200  # caracteres; texto para WhatsApp precisa ser curto
 
 INSTRUCAO_SISTEMA = (
@@ -52,7 +56,9 @@ INSTRUCAO_SISTEMA = (
 )
 
 
+# ------------------------------------------------------------------
 # Utilidades
+# ------------------------------------------------------------------
 
 def brl(valor: float) -> str:
     """Formata em reais: 1090.5 -> 'R$ 1.090,50'."""
@@ -91,18 +97,24 @@ def _texto_confere(texto: str, fatos_texto: str) -> bool:
 
 
 @lru_cache(maxsize=256)
-def _chamar_gemini(prompt: str) -> str:
+def _chamar_gemini(prompt: str, modelo: str = None) -> str:
     """Chama o Gemini uma vez (com cache: o mesmo prompt não gasta cota de novo)."""
     from google import genai
     from google.genai import types
 
-    cliente = genai.Client()  # lê GEMINI_API_KEY ou GOOGLE_API_KEY
+    cliente = genai.Client(http_options=types.HttpOptions(timeout=TEMPO_LIMITE_MS))  # lê GEMINI_API_KEY
     resposta = cliente.models.generate_content(
-        model=MODELO,
+        model=modelo or MODELO,
         contents=prompt,
         config=types.GenerateContentConfig(system_instruction=INSTRUCAO_SISTEMA),
     )
     return resposta.text or ""
+
+
+def _erro_passageiro(erro: Exception) -> bool:
+    """Erros que costumam passar sozinhos: cota (429) e sobrecarga do serviço (503)."""
+    texto = str(erro)
+    return any(marca in texto for marca in ("429", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE"))
 
 
 def _gemini_disponivel() -> bool:
@@ -114,22 +126,27 @@ def _gemini_disponivel() -> bool:
 def _redigir(pedido: str, fatos_texto: str, texto_padrao: str) -> tuple:
     """Pede ao Gemini para redigir; cai no texto padrão se algo der errado.
 
-    Faz no máximo 3 tentativas, esperando mais a cada uma quando a cota estoura (erro 429).
-    Devolve (texto, origem), com origem 'gemini' ou 'texto_padrao'.
+    Tenta o modelo principal até 2 vezes quando o erro é passageiro (429 ou 503),
+    esperando 2 s entre as tentativas, e depois o modelo de reserva uma vez.
+    No máximo 3 chamadas por texto. Devolve (texto, origem), com origem
+    'gemini' ou 'texto_padrao'.
     """
     if _gemini_disponivel():
         prompt = f"{pedido}\n\n<fatos>\n{fatos_texto}\n</fatos>"
-        for tentativa in range(3):
+        # Principal duas vezes e o reserva uma; se forem o mesmo modelo, a 3ª tentativa
+        # é só mais uma do principal (vale configurar GEMINI_MODEL_RESERVA diferente).
+        tentativas = [MODELO, MODELO, MODELO_RESERVA]
+        for i, modelo in enumerate(tentativas):
             try:
-                texto = _chamar_gemini(prompt).strip()
+                texto = _chamar_gemini(prompt, modelo).strip()
                 if _texto_confere(texto, fatos_texto):
                     return mascarar(texto), "gemini"
-                break  # texto ruim: não adianta repetir o mesmo prompt (está em cache)
-            except Exception as erro:  # sem rede, chave inválida, cota...
-                if "429" in str(erro) and tentativa < 2:
-                    time.sleep(2 ** (tentativa + 1))  # 2 s, depois 4 s
-                    continue
-                break
+                break  # texto ruim: não adianta repetir o mesmo prompt
+            except Exception as erro:  # sem rede, chave inválida, cota, sobrecarga...
+                if not _erro_passageiro(erro):
+                    break
+                if i + 1 < len(tentativas) and tentativas[i + 1] == modelo:
+                    time.sleep(2)  # mesmo modelo: espera um pouco antes de tentar de novo
     return mascarar(texto_padrao), "texto_padrao"
 
 
