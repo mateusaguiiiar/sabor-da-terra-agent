@@ -1,7 +1,6 @@
 import os
 from google.adk import Agent
 from google.genai import types
-
 from .callbacks import after_model_logger, before_model_guard, log_tool_execution
 from tools.tools import buscar_documentos
 from tools.triagem import triar_pedido
@@ -10,6 +9,13 @@ from tools.consultas import (
     verificar_certificacao,
     verificar_sazonalidade,
     obter_preco,
+    vendas_do_produtor,
+    saldo_a_receber,
+    rastrear_lote,
+)
+from tools.comunicacao import (
+    gerar_resumo_produtor,
+    gerar_notificacao_novo_pedido,
 )
 
 MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
@@ -75,5 +81,10 @@ root_agent = Agent(
         verificar_certificacao,
         verificar_sazonalidade,
         obter_preco,
+        vendas_do_produtor,
+        saldo_a_receber,
+        rastrear_lote,
+        gerar_resumo_produtor,
+        gerar_notificacao_novo_pedido,
     ],
 )
