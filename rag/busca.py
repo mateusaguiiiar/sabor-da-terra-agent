@@ -3,18 +3,21 @@ import chromadb
 from rag import config, embeddings
 from rag.funcao_mascara import mascarar_texto
 
-def buscar(pergunta, top_k=config.TOP_K_PADRAO, produtor=None, tipo_doc=None):
+def buscar(pergunta, top_k = config.TOP_K_PADRAO, produtor = None, tipo_doc = None):
+
     produtor_norm = produtor.strip().upper() if produtor else None  
 
     vetor_pergunta = embeddings.gerar_embeddings([pergunta], "RETRIEVAL_QUERY")[0]
 
     cliente_chroma = chromadb.PersistentClient(path=str(config.PASTA_CHROMA))
+
     try:
         colecao = cliente_chroma.get_collection(name=config.NOME_COLECAO)
     except Exception:
         raise RuntimeError("Índice não encontrado. Rode python INICIARBANCO.py antes de buscar.")
 
     total = colecao.count()
+    
     if total == 0:
         return []
 
@@ -38,8 +41,10 @@ def buscar(pergunta, top_k=config.TOP_K_PADRAO, produtor=None, tipo_doc=None):
         if similaridade < config.SIMILARIDADE_MINIMA:
             continue
 
-        if produtor_norm and produtor_norm not in metadados[i]["produtores"].split(","):  
-            continue
+        if produtor_norm:
+            codigos = metadados[i]["produtores"]
+            if codigos != "" and produtor_norm not in codigos.split(","):
+                continue
 
         arquivo = metadados[i]["arquivo"]
         if contagem_por_arquivo.get(arquivo, 0) >= config.MAX_TRECHOS_POR_ARQUIVO:
@@ -57,7 +62,7 @@ def buscar(pergunta, top_k=config.TOP_K_PADRAO, produtor=None, tipo_doc=None):
 
         if len(trechos_encontrados) >= top_k:
             break
-
+        
     return trechos_encontrados
 
 

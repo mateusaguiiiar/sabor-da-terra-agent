@@ -1886,6 +1886,7 @@ def _schema_gemini(model_cls) -> dict:
     return _limpar(raw)
 
 
+
 # ==============================================================================
 # 7. Funcao Principal: triar_pedido
 # ==============================================================================
@@ -1951,7 +1952,7 @@ def triar_pedido(
                 config=types.GenerateContentConfig(
                     system_instruction=PROMPT_SISTEMA_TRIAGEM,
                     response_mime_type="application/json",
-                    response_schema=TriagemResultado,
+                    response_schema=_schema_gemini(TriagemResultado),
                     temperature=0.1,
                 ),
             )

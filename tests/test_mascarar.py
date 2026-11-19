@@ -78,3 +78,10 @@ def test_mascarar_dados_em_estruturas():
 def test_vazio():
     assert mascarar("") == ""
     assert mascarar(None) == ""
+
+
+def test_marcacao_consistente_mesmo_para_dados_do_cadastro():
+    # A conta 28901-3 e o CPF 831.452.674-90 são da P001: a marcação deve seguir
+    # o formato de cada tipo, igual a dados de fora do cadastro
+    resultado = mascarar("CPF 831.452.674-90, agência 0437 e conta 28901-3")
+    assert resultado == "CPF ***.***.***-**, agência **** e conta ****"
