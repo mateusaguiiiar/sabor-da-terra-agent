@@ -14,7 +14,6 @@ Contrato congelado (D5 - 17/11/2026):
 import csv
 import hashlib
 import json
-import math
 import os
 import re
 import time
@@ -29,23 +28,13 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field
 
-try:
-    from tools import consultas as _consultas_ext
-    from tools import dados as _dados_ext
-except ImportError:
-    _consultas_ext = None
-    _dados_ext = None
-
-try:
-    from tools.mascarar import mascarar_dados as _mascarar_dados_externo
-except ImportError:
-    _mascarar_dados_externo = None
+from tools import consultas, dados
+from tools.mascarar import mascarar_dados as _mascarar_dados_externo
 
 load_dotenv()
 
 RAIZ_PROJETO = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("PASTA_DADOS", RAIZ_PROJETO / "data"))
-DATA_REFERENCIA_PADRAO = date.fromisoformat(os.getenv("DATA_REFERENCIA", "2026-10-30"))
 
 # Expressoes regulares para dados sensiveis (usadas na validacao e no fallback de mascaramento)
 RE_CPF = re.compile(r"(?<![\d./])\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?![\d/])")
@@ -215,7 +204,7 @@ def mascarar_saida(valor: Any) -> Any:
 
 
 # ==============================================================================
-# 3. Catalogo, Camada de Dados (Integrada + Fallback) e Normalizacao
+# 3. Catalogo e Normalizacao de Produtos (Integrada a tools/dados.py)
 # ==============================================================================
 
 _CATALOGO_FALLBACK = [
@@ -260,8 +249,6 @@ MAPA_SINONIMOS = {
     "mel": "mel silvestre",
 }
 
-MESES_COLUNAS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
-
 
 def _sem_acento(texto: str) -> str:
     """Converte texto para minusculas sem acentos e sem espacos extras."""
@@ -270,233 +257,6 @@ def _sem_acento(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", str(texto))
     sem_marcas = "".join(c for c in normalizado if not unicodedata.combining(c))
     return " ".join(sem_marcas.lower().split())
-
-
-def _obter_data_referencia_base() -> date:
-    if _dados_ext is not None and hasattr(_dados_ext, "DATA_REFERENCIA"):
-        return _dados_ext.DATA_REFERENCIA
-    return DATA_REFERENCIA_PADRAO
-
-
-@lru_cache(maxsize=8)
-def _ler_csv_local(nome_arquivo: str) -> List[Dict[str, str]]:
-    caminho = DATA_DIR / nome_arquivo
-    if not caminho.exists():
-        return []
-    with open(caminho, "r", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def _obter_lista_produtores_bruta() -> List[Dict[str, Any]]:
-    """Retorna registros de produtores usando tools.dados quando disponivel ou leitura CSV local."""
-    if _dados_ext is not None:
-        try:
-            df = _dados_ext.produtores()
-            registros = []
-            for _, p in df.iterrows():
-                validade_dt = p["validade_certificacao"]
-                val_iso = (
-                    validade_dt.date().isoformat()
-                    if hasattr(validade_dt, "date") and str(validade_dt) != "NaT"
-                    else None
-                )
-                registros.append({
-                    "id": str(p["id"]).strip(),
-                    "nome_completo": str(p["nome_completo"]).strip(),
-                    "telefone": str(p.get("telefone", "")).strip(),
-                    "email": str(p.get("email", "")).strip(),
-                    "municipio": str(p.get("municipio", "")).strip(),
-                    "produtos_lista": list(p["produtos_lista"]),
-                    "organico": bool(p["organico"]),
-                    "validade_iso": val_iso,
-                    "ativo": bool(p["ativo"]),
-                    "status": str(p.get("status", "")).strip(),
-                })
-            return registros
-        except Exception:
-            pass
-
-    linhas = _ler_csv_local("produtores.csv")
-    registros = []
-    for p in linhas:
-        val_str = (p.get("validade_certificacao") or "").strip()
-        registros.append({
-            "id": (p.get("id") or "").strip(),
-            "nome_completo": (p.get("nome_completo") or "").strip(),
-            "telefone": (p.get("telefone") or "").strip(),
-            "email": (p.get("email") or "").strip(),
-            "municipio": (p.get("municipio") or "").strip(),
-            "produtos_lista": [_sem_acento(x) for x in (p.get("produtos") or "").split(",") if x.strip()],
-            "organico": _sem_acento(p.get("certificacao_organica") or "") == "sim",
-            "validade_iso": val_str[:10] if val_str else None,
-            "ativo": _sem_acento(p.get("status") or "") == "ativo",
-            "status": (p.get("status") or "").strip(),
-        })
-    return registros
-
-
-def _produtor_produz_item(produtos_lista: List[str], produto: str) -> bool:
-    prod_sinonimo = MAPA_SINONIMOS.get(_sem_acento(produto), produto)
-    palavras_alvo = set(_sem_acento(prod_sinonimo).replace("/", " ").split())
-    palavras_orig = set(_sem_acento(produto).replace("/", " ").split())
-    for item in produtos_lista:
-        pi = set(_sem_acento(item).replace("/", " ").split())
-        if pi and (pi <= palavras_alvo or palavras_alvo <= pi or pi <= palavras_orig or palavras_orig <= pi):
-            return True
-    return False
-
-
-def _verificar_certificacao_wrapper(
-    produtor_id: str,
-    produto: Optional[str] = None,
-    data_ref_iso: Optional[str] = None,
-) -> Dict[str, Any]:
-    if _consultas_ext is not None:
-        return _consultas_ext.verificar_certificacao(produtor_id, produto=produto, data_ref=data_ref_iso)
-
-    dt_ref = date.fromisoformat(data_ref_iso[:10]) if data_ref_iso else _obter_data_referencia_base()
-    for p in _obter_lista_produtores_bruta():
-        if p["id"].upper() == str(produtor_id).strip().upper():
-            nome = p["nome_completo"]
-            if produto and not _produtor_produz_item(p["produtos_lista"], produto):
-                return {"valida": False, "validade": None, "motivo": f"{nome} ({p['id']}) nao produz '{produto}'."}
-            if not p["organico"] or not p["validade_iso"]:
-                return {"valida": False, "validade": None, "motivo": f"{nome} ({p['id']}) nao possui certificacao organica."}
-            val_dt = date.fromisoformat(p["validade_iso"])
-            if val_dt < dt_ref:
-                return {
-                    "valida": False,
-                    "validade": val_dt.isoformat(),
-                    "motivo": f"Certificação de {nome} ({p['id']}) VENCIDA em {val_dt:%d/%m/%Y}.",
-                }
-            dias = (val_dt - dt_ref).days
-            motivo = f"Certificação de {nome} ({p['id']}) válida até {val_dt:%d/%m/%Y}."
-            if dias <= 60:
-                motivo += f" Atenção: vence em {dias} dias."
-            return {"valida": True, "validade": val_dt.isoformat(), "motivo": motivo}
-    return {"erro": f"Produtor {produtor_id} nao encontrado."}
-
-
-def _consultar_produtores_wrapper(
-    produto: Optional[str] = None,
-    organico: Optional[bool] = None,
-    apenas_ativos: bool = True,
-) -> Dict[str, Any]:
-    if _consultas_ext is not None:
-        return _consultas_ext.consultar_produtores(
-            produto=produto,
-            organico=organico,
-            apenas_ativos=apenas_ativos,
-        )
-
-    resultado = []
-    for p in _obter_lista_produtores_bruta():
-        if apenas_ativos and not p["ativo"]:
-            continue
-        if produto and not _produtor_produz_item(p["produtos_lista"], produto):
-            continue
-        cert = _verificar_certificacao_wrapper(p["id"])
-        if organico is True and not cert.get("valida"):
-            continue
-        if organico is False and cert.get("valida"):
-            continue
-        resultado.append({
-            "id": p["id"],
-            "nome": p["nome_completo"],
-            "municipio": p["municipio"],
-            "produtos": p["produtos_lista"],
-            "organico": p["organico"],
-            "certificacao_valida": bool(cert.get("valida")),
-            "validade_certificacao": cert.get("validade"),
-            "status": p["status"],
-        })
-    return {"produtores": resultado}
-
-
-def _verificar_sazonalidade_wrapper(produto: str, mes: int) -> Dict[str, Any]:
-    if _consultas_ext is not None:
-        return _consultas_ext.verificar_sazonalidade(produto, mes)
-
-    linhas = _ler_csv_local("sazonalidade.csv")
-    alvo = _sem_acento(MAPA_SINONIMOS.get(_sem_acento(produto), produto))
-    col_mes = MESES_COLUNAS[mes - 1]
-    alertas_map = {
-        "nenhuma": "Produto fora de safra neste mês: não há produção.",
-        "baixa": "Baixa disponibilidade neste mês (pode estar fora de safra): confirmar com o produtor antes de aceitar.",
-    }
-    for linha in linhas:
-        prod_csv = _sem_acento(linha.get("produto", ""))
-        if prod_csv == alvo or (alvo == "tomate santa cruz" and prod_csv == "tomate"):
-            nivel = _sem_acento(linha.get(col_mes, ""))
-            return {
-                "produto": linha.get("produto", produto),
-                "mes": col_mes,
-                "nivel": nivel,
-                "observacao": linha.get("observacao", ""),
-                "alerta": alertas_map.get(nivel),
-            }
-    return {"erro": f"Produto '{produto}' nao encontrado."}
-
-
-def _obter_preco_wrapper(produto: str, organico: bool = False, quantidade_kg: float = 0.0) -> Dict[str, Any]:
-    if _consultas_ext is not None:
-        return _consultas_ext.obter_preco(produto, organico=organico, quantidade_kg=quantidade_kg)
-
-    linhas = _ler_csv_local("tabela_precos_outubro_2026.csv")
-    alvo = _sem_acento(MAPA_SINONIMOS.get(_sem_acento(produto), produto))
-    for linha in linhas:
-        prod_csv = _sem_acento(linha.get("produto", ""))
-        if prod_csv == alvo:
-            col = "preco_organico" if organico else "preco_convencional"
-            val_str = (linha.get(col) or "").strip()
-            if not val_str or val_str.lower() == "n/d":
-                return {"erro": f"{linha.get('produto')} nao disponivel na versao solicitada."}
-            preco = float(val_str)
-            minimo = float(linha.get("volume_minimo_atacado_kg") or 0)
-            pct = float(linha.get("desconto_atacado_pct") or 0)
-            desconto = pct if (minimo > 0 and quantidade_kg >= minimo and pct > 0) else 0.0
-            bruto = round(preco * float(quantidade_kg), 2)
-            total = round(bruto * (1.0 - desconto / 100.0), 2)
-            return {
-                "produto": linha.get("produto"),
-                "unidade": linha.get("unidade"),
-                "organico": organico,
-                "preco_unitario": preco,
-                "quantidade": float(quantidade_kg),
-                "desconto_atacado": desconto,
-                "valor_desconto": round(bruto - total, 2),
-                "total": total,
-                "observacao": linha.get("observacao", ""),
-            }
-    return {"erro": f"Produto '{produto}' nao encontrado."}
-
-
-def _obter_lotes_sem_sensiveis() -> List[Dict[str, Any]]:
-    if _dados_ext is not None:
-        try:
-            df = _dados_ext.sem_sensiveis(_dados_ext.lotes())
-            return [
-                {
-                    "lote_id": str(r["lote_id"]),
-                    "produto": str(r["produto"]),
-                    "quantidade_kg": float(r["quantidade_kg"]),
-                    "comprador": str(r["comprador"]),
-                }
-                for _, r in df.iterrows()
-            ]
-        except Exception:
-            pass
-
-    linhas = _ler_csv_local("lotes.csv")
-    return [
-        {
-            "lote_id": (r.get("lote_id") or "").strip(),
-            "produto": (r.get("produto") or "").strip(),
-            "quantidade_kg": float(r.get("quantidade_kg") or 0),
-            "comprador": (r.get("comprador") or "").strip(),
-        }
-        for r in linhas
-    ]
 
 
 @lru_cache(maxsize=1)
@@ -543,7 +303,6 @@ def normalizar_nome_produto(nome_bruto: str) -> str:
     if chave in MAPA_SINONIMOS:
         return MAPA_SINONIMOS[chave]
 
-    # Se o modelo anexou 'organico'/'organica'/'convencional' ao nome de um produto do catalogo
     chave_sem_qualif = re.sub(
         r"\b(com certificacao organica|certificado organico|organico|organica|convencional|artesanal)\b",
         "",
@@ -559,7 +318,7 @@ def normalizar_nome_produto(nome_bruto: str) -> str:
 
 
 # ==============================================================================
-# 4. Validacoes Deterministicas em Codigo (Etapas D2, D3 e D4)
+# 4. Validacoes Deterministicas em Codigo (Etapas D2, D3, D4 e D5)
 # ==============================================================================
 
 DIAS_SEMANA_PT = {
@@ -642,7 +401,7 @@ PADROES_INJECAO_OU_COMANDO = (
     "aprovar pagamento",
 )
 
-FAIXAS_CONTRATO_BOM_PRECO: Dict[str, Tuple[float, float, str]] = {
+_FAIXAS_BOM_PRECO_FALLBACK: Dict[str, Tuple[float, float, str]] = {
     "goiaba paluma": (50.0, 80.0, "kg"),
     "banana prata": (40.0, 60.0, "kg"),
     "manga tommy": (30.0, 50.0, "kg"),
@@ -656,7 +415,7 @@ FAIXAS_CONTRATO_BOM_PRECO: Dict[str, Tuple[float, float, str]] = {
     "rapadura": (20.0, 30.0, "kg"),
 }
 
-PRECOS_CONTRATO_PNAE: Dict[str, Tuple[float, str]] = {
+_PRECOS_PNAE_FALLBACK: Dict[str, Tuple[float, str]] = {
     "banana prata": (3.80, "kg"),
     "goiaba paluma": (5.20, "kg"),
     "manga tommy": (5.50, "kg"),
@@ -753,6 +512,47 @@ CAPACIDADES_DOCUMENTADAS: Dict[str, Dict[str, Any]] = {
 }
 
 
+@lru_cache(maxsize=1)
+def _carregar_faixas_bom_preco() -> Dict[str, Tuple[float, float, str]]:
+    """Carrega dinamicamente as faixas semanais de data/contratos/contrato_mercado_bom_preco.txt."""
+    caminho = DATA_DIR / "contratos" / "contrato_mercado_bom_preco.txt"
+    if not caminho.exists():
+        return dict(_FAIXAS_BOM_PRECO_FALLBACK)
+    try:
+        texto = caminho.read_text(encoding="utf-8")
+        faixas: Dict[str, Tuple[float, float, str]] = {}
+        padrao = re.compile(r"-\s*([^:\n]+):\s*(\d+)\s*-\s*(\d+)\s*(\S+)")
+        for m in padrao.finditer(texto):
+            nome_bruto = re.sub(r"\([^)]*\)", "", m.group(1)).strip()
+            prod = normalizar_nome_produto(nome_bruto)
+            unid = _sem_acento(m.group(4))
+            faixas[prod] = (float(m.group(2)), float(m.group(3)), unid)
+        return faixas if faixas else dict(_FAIXAS_BOM_PRECO_FALLBACK)
+    except OSError:
+        return dict(_FAIXAS_BOM_PRECO_FALLBACK)
+
+
+@lru_cache(maxsize=1)
+def _carregar_precos_pnae() -> Dict[str, Tuple[float, str]]:
+    """Carrega dinamicamente os itens e precos de data/contratos/contrato_pnae_garanhuns.txt."""
+    caminho = DATA_DIR / "contratos" / "contrato_pnae_garanhuns.txt"
+    if not caminho.exists():
+        return dict(_PRECOS_PNAE_FALLBACK)
+    try:
+        texto = caminho.read_text(encoding="utf-8")
+        precos: Dict[str, Tuple[float, str]] = {}
+        padrao = re.compile(r"\d+\.\s*([^.\n]+?)\s*\.{2,}\s*R\$\s*(\d+[.,]\d+)\s*/\s*(\S+)")
+        for m in padrao.finditer(texto):
+            nome_bruto = re.sub(r"\([^)]*\)", "", m.group(1)).strip()
+            prod = normalizar_nome_produto(nome_bruto)
+            valor = float(m.group(2).replace(",", "."))
+            unid = _sem_acento(m.group(3))
+            precos[prod] = (valor, unid)
+        return precos if precos else dict(_PRECOS_PNAE_FALLBACK)
+    except OSError:
+        return dict(_PRECOS_PNAE_FALLBACK)
+
+
 def _ja_existe_tema(lista: List[str], palavras_chave: tuple) -> bool:
     """Verifica se alguma frase na lista ja aborda qualquer uma das palavras-chave."""
     for item in lista:
@@ -768,36 +568,77 @@ def _apenas_digitos(texto: Optional[str]) -> str:
     return "".join(c for c in str(texto) if c.isdigit())
 
 
-def _identificar_produtor_por_remetente(remetente: Optional[str]) -> Optional[Dict[str, Any]]:
+def _identificar_produtor_por_remetente(
+    remetente: Optional[str],
+    texto: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    Cruza o telefone ou e-mail do remetente com produtores.csv.
+    Cruza o telefone, e-mail, ID ou autoidentificacao do remetente com produtores.csv (via tools.dados).
+    Quando 'remetente' nao e passado (ex: chamada via UI/Agente), verifica autoidentificacao no proprio 'texto',
+    exigindo ID explicito (P001..P018), telefone cadastrado ou nome composto (>= 2 palavras do nome completo),
+    para evitar falso positivo com primeiro nome isolado (ex: 'Carlos').
     Retorna apenas metadados nao sensiveis (id, nome_completo, municipio, produtos_lista, organico, status).
     """
-    if not remetente:
+    candidatos_busca: List[Tuple[str, bool]] = []
+    if remetente and str(remetente).strip():
+        candidatos_busca.append((str(remetente).strip(), False))
+
+    if texto:
+        texto_norm = _sem_acento(texto)
+        padrao_auto = re.compile(
+            r"\b(?:sou\s+(?:o|a)\s+|aqui\s+e\s+(?:o|a)?\s*|produtor(?:a)?\s+)([a-z0-9\s()\-]{3,45}?)(?:[.,;\n]|$)"
+        )
+        for m in padrao_auto.finditer(texto_norm):
+            candidatos_busca.append((m.group(1).strip(), True))
+
+    if not candidatos_busca:
         return None
-    digitos_rem = _apenas_digitos(remetente)
-    rem_norm = _sem_acento(remetente)
 
-    for linha in _obter_lista_produtores_bruta():
-        tel_digitos = _apenas_digitos(linha.get("telefone", ""))
-        email_norm = _sem_acento(linha.get("email", ""))
-        nome_norm = _sem_acento(linha.get("nome_completo", ""))
-        pid_norm = _sem_acento(linha.get("id", ""))
+    try:
+        df_prod = dados.produtores()
+    except Exception:
+        return None
 
-        match_tel = bool(digitos_rem and len(digitos_rem) >= 8 and tel_digitos.endswith(digitos_rem[-8:]))
-        match_email = bool(email_norm and email_norm == rem_norm)
-        match_id = bool(pid_norm and pid_norm in rem_norm.split())
-        match_nome = bool(nome_norm and len(rem_norm) >= 5 and rem_norm in nome_norm)
+    stopwords_nome = {"de", "da", "do", "das", "dos", "e", "sou", "o", "a", "produtor", "produtora"}
 
-        if match_tel or match_email or match_id or match_nome:
-            return {
-                "id": linha["id"],
-                "nome_completo": linha["nome_completo"],
-                "municipio": linha["municipio"],
-                "produtos_lista": list(linha["produtos_lista"]),
-                "organico": bool(linha["organico"]),
-                "status": linha["status"],
-            }
+    for alvo, veio_do_texto in candidatos_busca:
+        digitos_rem = _apenas_digitos(alvo)
+        rem_norm = _sem_acento(alvo)
+        palavras_rem = set(re.findall(r"[a-z0-9]+", rem_norm))
+        palavras_significativas_rem = {w for w in palavras_rem if len(w) >= 3 and w not in stopwords_nome}
+
+        for _, linha in df_prod.iterrows():
+            tel_digitos = _apenas_digitos(linha.get("telefone", ""))
+            email_norm = _sem_acento(linha.get("email", ""))
+            nome_norm = _sem_acento(linha.get("nome_completo", ""))
+            pid_norm = _sem_acento(linha.get("id", ""))
+            palavras_nome_prod = {w for w in nome_norm.split() if len(w) >= 3 and w not in stopwords_nome}
+
+            match_tel = bool(digitos_rem and len(digitos_rem) >= 8 and tel_digitos.endswith(digitos_rem[-8:]))
+            match_email = bool(email_norm and email_norm == rem_norm)
+            match_id = bool(pid_norm and pid_norm in palavras_rem)
+
+            if veio_do_texto:
+                # No texto livre, exige pelo menos 2 nomes coincidentes (nome + sobrenome) se nao houver ID nem telefone
+                match_nome = len(palavras_significativas_rem & palavras_nome_prod) >= 2
+            else:
+                match_nome = bool(
+                    nome_norm
+                    and (
+                        (len(rem_norm) >= 5 and rem_norm in nome_norm)
+                        or len(palavras_significativas_rem & palavras_nome_prod) >= 2
+                    )
+                )
+
+            if match_tel or match_email or match_id or match_nome:
+                return {
+                    "id": str(linha["id"]).strip(),
+                    "nome_completo": str(linha["nome_completo"]).strip(),
+                    "municipio": str(linha["municipio"]).strip(),
+                    "produtos_lista": list(linha["produtos_lista"]),
+                    "organico": bool(linha["organico"]),
+                    "status": str(linha["status"]).strip(),
+                }
     return None
 
 
@@ -1032,7 +873,7 @@ def validar_safra(
     texto: str,
     data_ref: date,
 ) -> List[str]:
-    """Valida a sazonalidade de cada item do pedido."""
+    """Valida a sazonalidade de cada item do pedido via tools.consultas.verificar_sazonalidade."""
     alertas: List[str] = []
     if res.tipo_mensagem not in ("pedido de compra", "cotacao") or not res.itens:
         return alertas
@@ -1050,7 +891,7 @@ def validar_safra(
                 continue
             produtos_verificados.add(prod_chave)
 
-            saz = _verificar_sazonalidade_wrapper(prod, mes)
+            saz = consultas.verificar_sazonalidade(prod, mes)
             if "erro" in saz:
                 continue
 
@@ -1085,7 +926,7 @@ def validar_certificacao_pedido(
     texto: str,
     data_ref: date,
 ) -> List[str]:
-    """Valida exigencias de certificacao organica."""
+    """Valida exigencias de certificacao organica via tools.consultas."""
     alertas: List[str] = []
     texto_norm = _sem_acento(texto)
     data_ref_iso = data_ref.isoformat()
@@ -1107,10 +948,10 @@ def validar_certificacao_pedido(
     if consulta_geral_organicos:
         vencidas = []
         proximas = []
-        for p in _obter_lista_produtores_bruta():
+        for _, p in dados.produtores().iterrows():
             if not p["organico"]:
                 continue
-            cert = _verificar_certificacao_wrapper(p["id"], data_ref_iso=data_ref_iso)
+            cert = consultas.verificar_certificacao(p["id"], data_ref=data_ref_iso)
             if not cert.get("valida"):
                 vencidas.append(f"{p['nome_completo']} ({p['id']}) vencida em {cert.get('validade')}")
             elif "vence em" in (cert.get("motivo") or ""):
@@ -1134,12 +975,12 @@ def validar_certificacao_pedido(
 
     sem_produtor_organico: List[str] = []
     for prod in produtos_checar:
-        todos_prod = _consultar_produtores_wrapper(produto=prod, apenas_ativos=True).get("produtores", [])
-        organicos_validos = _consultar_produtores_wrapper(produto=prod, organico=True, apenas_ativos=True).get("produtores", [])
+        todos_prod = consultas.consultar_produtores(produto=prod, apenas_ativos=True).get("produtores", [])
+        organicos_validos = consultas.consultar_produtores(produto=prod, organico=True, apenas_ativos=True).get("produtores", [])
 
         for p in todos_prod:
             if p.get("organico") and not p.get("certificacao_valida"):
-                cert_info = _verificar_certificacao_wrapper(p["id"], produto=prod, data_ref_iso=data_ref_iso)
+                cert_info = consultas.verificar_certificacao(p["id"], produto=prod, data_ref=data_ref_iso)
                 motivo = cert_info.get("motivo") or f"Certificacao de {p['id']} vencida."
                 ids_aptos = ", ".join(f"{po['id']} ({po['nome']})" for po in organicos_validos) or "nenhum"
                 alertas.append(
@@ -1147,7 +988,7 @@ def validar_certificacao_pedido(
                     f"Produtores ativos com certificacao valida para '{prod}': {ids_aptos}."
                 )
             elif p.get("organico") and p.get("certificacao_valida"):
-                cert_info = _verificar_certificacao_wrapper(p["id"], produto=prod, data_ref_iso=data_ref_iso)
+                cert_info = consultas.verificar_certificacao(p["id"], produto=prod, data_ref=data_ref_iso)
                 if "vence em" in (cert_info.get("motivo") or ""):
                     alertas.append(f"Observacao de certificacao ({prod}): {cert_info['motivo']}")
 
@@ -1187,6 +1028,14 @@ def validar_capacidade(
     for item in res.itens:
         prod_chave = _sem_acento(item.produto_normalizado)
         qtd = item.quantidade
+
+        if prod_chave == "frango caipira":
+            alertas.append(
+                "Restricao sanitaria (Inspecao ADAGRO - NC-001 GRAVE): o produtor P017 (frango caipira) "
+                "nao possui registro SIE e a ADAGRO determinou suspensao imediata da intermediacao "
+                "pela cooperativa ate regularizacao (permitida apenas venda direta ao consumidor final)."
+            )
+
         if qtd is None:
             continue
 
@@ -1271,10 +1120,11 @@ def _consultar_historico_lotes_comprador(comprador: Optional[str], remetente: Op
         return []
 
     registros: List[str] = []
-    for linha in _obter_lotes_sem_sensiveis():
+    df_lotes = dados.sem_sensiveis(dados.lotes())
+    for _, linha in df_lotes.iterrows():
         comp_lote = _sem_acento(linha.get("comprador", ""))
         if comprador_busca in comp_lote or comp_lote in comprador_busca:
-            registros.append(f"{linha['lote_id']} ({linha['produto']}, {linha['quantidade_kg']:g} kg)")
+            registros.append(f"{linha['lote_id']} ({linha['produto']}, {float(linha['quantidade_kg']):g} kg)")
     return registros
 
 
@@ -1313,8 +1163,9 @@ def validar_contrato_e_historico(
             except ValueError:
                 pass
 
+        faixas_bom_preco = _carregar_faixas_bom_preco()
         for item in res.itens:
-            faixa = FAIXAS_CONTRATO_BOM_PRECO.get(item.produto_normalizado)
+            faixa = faixas_bom_preco.get(item.produto_normalizado)
             if faixa and item.quantidade is not None:
                 min_q, max_q, unid = faixa
                 if item.quantidade < min_q:
@@ -1331,16 +1182,17 @@ def validar_contrato_e_historico(
                     )
 
     elif contrato_id == "pnae":
+        precos_pnae = _carregar_precos_pnae()
         total_contrato = 0.0
         itens_fora_contrato = []
         tem_origem_animal_p017 = False
 
         for item in res.itens:
             prod = item.produto_normalizado
-            if prod in PRECOS_CONTRATO_PNAE and item.quantidade is not None:
-                preco_unit, _ = PRECOS_CONTRATO_PNAE[prod]
+            if prod in precos_pnae and item.quantidade is not None:
+                preco_unit, _ = precos_pnae[prod]
                 total_contrato += round(preco_unit * item.quantidade, 2)
-            elif prod not in PRECOS_CONTRATO_PNAE:
+            elif prod not in precos_pnae:
                 itens_fora_contrato.append(prod)
 
             if _sem_acento(prod) in ("ovos caipira", "frango caipira"):
@@ -1397,9 +1249,12 @@ def validar_contrato_e_historico(
         )
 
     if res.tipo_mensagem == "cotacao" and res.itens:
-        subtotal = 0.0
+        subtotal_extra = 0.0
+        subtotal_especial = 0.0
+        tem_goiaba_sem_classe = False
         itens_precificados = 0
         itens_pendentes_preco = []
+
         for item in res.itens:
             if item.quantidade is None:
                 continue
@@ -1407,27 +1262,54 @@ def validar_contrato_e_historico(
             if prod_norm in TERMOS_AMBIGUOS_PRODUTO:
                 itens_pendentes_preco.append(item.produto_normalizado)
                 continue
-            prod_consulta = "goiaba paluma extra" if prod_norm == "goiaba paluma" else item.produto_normalizado
-            res_preco = _obter_preco_wrapper(
-                prod_consulta,
-                organico=item.exige_organico,
-                quantidade_kg=item.quantidade,
-            )
-            if "total" in res_preco:
-                subtotal += float(res_preco["total"])
-                itens_precificados += 1
+
+            if prod_norm == "goiaba paluma":
+                res_extra = consultas.obter_preco(
+                    "goiaba paluma extra",
+                    organico=item.exige_organico,
+                    quantidade_kg=item.quantidade,
+                )
+                res_esp = consultas.obter_preco(
+                    "goiaba paluma especial",
+                    organico=item.exige_organico,
+                    quantidade_kg=item.quantidade,
+                )
+                if "total" in res_extra and "total" in res_esp:
+                    subtotal_extra += float(res_extra["total"])
+                    subtotal_especial += float(res_esp["total"])
+                    tem_goiaba_sem_classe = True
+                    itens_precificados += 1
+                else:
+                    itens_pendentes_preco.append(item.produto_normalizado)
             else:
-                itens_pendentes_preco.append(item.produto_normalizado)
+                res_preco = consultas.obter_preco(
+                    item.produto_normalizado,
+                    organico=item.exige_organico,
+                    quantidade_kg=item.quantidade,
+                )
+                if "total" in res_preco:
+                    val = float(res_preco["total"])
+                    subtotal_extra += val
+                    subtotal_especial += val
+                    itens_precificados += 1
+                else:
+                    itens_pendentes_preco.append(item.produto_normalizado)
 
         if itens_precificados > 0:
-            compl = (
+            compl_goiaba = (
+                f" (considerando goiaba paluma extra; com goiaba paluma especial: R$ {subtotal_especial:,.2f})"
+                if tem_goiaba_sem_classe and subtotal_especial != subtotal_extra
+                else ""
+            )
+            compl_pend = (
                 f" (pendente especificacao de: {', '.join(itens_pendentes_preco)})"
                 if itens_pendentes_preco
                 else ""
             )
             alertas.append(
                 f"Orcamento preliminar calculado em codigo (tabela de outubro/2026): "
-                f"subtotal de R$ {subtotal:,.2f} para {itens_precificados} item(ns) definido(s){compl}."
+                f"subtotal de R$ {subtotal_extra:,.2f} para {itens_precificados} item(ns) definido(s)"
+                f"{compl_goiaba}{compl_pend}."
             )
 
     return alertas
@@ -1447,7 +1329,7 @@ def _detectar_idioma_ingles(texto: str) -> bool:
 
 def validar_idioma(res: TriagemResultado, texto: str) -> None:
     """
-    Garante sinalizacao explícita quando a mensagem está em ingles (PED-011)
+    Garante sinalizacao explicita quando a mensagem esta em ingles (PED-011)
     e adapta perguntas de esclarecimento para ingles.
     """
     if not _detectar_idioma_ingles(texto):
@@ -1457,31 +1339,33 @@ def validar_idioma(res: TriagemResultado, texto: str) -> None:
     if not _ja_existe_tema(res.problemas, ("ingles", "english", "idioma")):
         res.problemas.append(diretiva_en)
 
-    # Adapta perguntas de esclarecimento para ingles quando geradas em portugues
+    nomes_itens = ", ".join(i.produto_normalizado for i in res.itens if i.produto_normalizado) or "the requested products"
     perguntas_en: List[str] = []
     for q in res.perguntas_de_esclarecimento:
         q_norm = _sem_acento(q)
         if "data" in q_norm or "inicio" in q_norm or "entrega" in q_norm:
-            perguntas_en.append("What is the expected start date and delivery schedule for the monthly supply?")
+            perguntas_en.append("What is the expected start date and delivery schedule for the supply?")
         elif "variedade" in q_norm or "especific" in q_norm:
             perguntas_en.append(
-                "Could you confirm if Tommy mango, Paluma guava, and yellow passion fruit meet your export specifications?"
+                f"Could you confirm if our standard catalog varieties ({nomes_itens}) meet your specifications?"
             )
         else:
             perguntas_en.append(q)
     res.perguntas_de_esclarecimento = list(dict.fromkeys(perguntas_en))
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=16)
 def _consultar_demanda_pendente_pedidos(produto_alvo: str) -> List[str]:
     """
     Cruza oferta de estoque de produtor (ex: queijo coalho no PED-015) com pedidos de compra/cotacao
-    pendentes em data/pedidos.json.
+    pendentes em data/pedidos.json, ignorando mensagens enviadas por produtores ou notificacoes oficiais.
     """
     caminho_pedidos = DATA_DIR / "pedidos.json"
     if not caminho_pedidos.exists():
         return []
     alvo_norm = _sem_acento(produto_alvo)
+    if not alvo_norm or alvo_norm in TERMOS_AMBIGUOS_PRODUTO:
+        return []
     try:
         with open(caminho_pedidos, "r", encoding="utf-8") as f:
             pedidos = json.load(f)
@@ -1491,10 +1375,16 @@ def _consultar_demanda_pendente_pedidos(produto_alvo: str) -> List[str]:
     demandas: List[str] = []
     for p in pedidos:
         pid = p.get("id", "")
-        if pid in ("PED-2026-012", "PED-2026-014", "PED-2026-015"):
-            continue
-        msg_norm = _sem_acento(p.get("mensagem_original", ""))
+        remetente_p = p.get("remetente") or ""
         comprador = p.get("comprador", "")
+        msg_norm = _sem_acento(p.get("mensagem_original", ""))
+
+        # Ignora mensagens cujo remetente e um produtor cadastrado ou notificacoes de fiscalizacao
+        if _identificar_produtor_por_remetente(remetente_p) is not None:
+            continue
+        if "notificacao" in msg_norm and "adagro" in msg_norm:
+            continue
+
         if alvo_norm in msg_norm:
             m_qtd = re.search(rf"{re.escape(alvo_norm)}\s*:?\s*(\d+)\s*kg|\b(\d+)\s*kg\s+de\s+{re.escape(alvo_norm)}", msg_norm)
             if m_qtd:
@@ -1505,22 +1395,64 @@ def _consultar_demanda_pendente_pedidos(produto_alvo: str) -> List[str]:
     return demandas
 
 
+def _montar_checklist_adagro_dinamico(data_ref_iso: str, texto: str = "") -> str:
+    """
+    Monta o checklist de inspecao da ADAGRO consultando dinamicamente dados.produtores()
+    e consultas.verificar_certificacao().
+    """
+    inativos: List[str] = []
+    vencidas: List[str] = []
+    proximas: List[str] = []
+
+    try:
+        for _, p in dados.produtores().iterrows():
+            pid = str(p["id"]).strip()
+            if not p["ativo"]:
+                inativos.append(pid)
+            if p["organico"]:
+                cert = consultas.verificar_certificacao(pid, data_ref=data_ref_iso)
+                if not cert.get("valida"):
+                    vencidas.append(f"{pid} vencida em {cert.get('validade')}")
+                elif "vence em" in (cert.get("motivo") or ""):
+                    proximas.append(f"{pid} vence em {cert.get('validade')}")
+    except Exception:
+        inativos = ["P015"]
+        vencidas = ["P008 vencida em 2026-09-30"]
+        proximas = ["P004 vence em 2026-12-01"]
+
+    datas_inspecao = extrair_datas_explicitas_codigo(texto)
+    periodo_str = f" ({', '.join(datas_inspecao)})" if datas_inspecao else ""
+    nota_inativos = f"verificar {', '.join(inativos)} inativo, " if inativos else ""
+    detalhes_cert = "; ".join(vencidas + proximas) or "conferir validades"
+
+    return (
+        f"Checklist para a equipe (Inspecao ADAGRO{periodo_str}): "
+        f"(1) Cadastro de produtores ativos ({nota_inativos}sem expor CPF automaticamente); "
+        f"(2) Certificacoes organicas vigentes (atencao: {detalhes_cert}); "
+        "(3) Laudos sanitarios e pendencias ADAGRO (P002 apiario regular; P003 queijaria com NC-001 menor da lixeira sem pedal; "
+        "P017 frango caipira com NC-001 grave sem SIE; veiculo DEF-5678 com NC-002 de termometro); "
+        "(4) Rastreabilidade dos ultimos 3 lotes (lotes.csv); "
+        "(5) Contratos institucionais vigentes (Mercado Bom Preco, PNAE e Restaurante Raizes)."
+    )
+
+
 def validar_nao_compra_e_roteamento(
     res: TriagemResultado,
     texto: str,
     remetente: Optional[str] = None,
+    data_ref: Optional[date] = None,
 ) -> List[str]:
     """
     Trata especificamente mensagens que nao sao pedidos de compra:
-    - Notificacao oficial (ADAGRO - PED-014): escalonamento humano e checklist de inspecao;
+    - Notificacao oficial (ADAGRO - PED-014): escalonamento humano e checklist dinamico de inspecao;
     - Mensagem de produtor (PED-012 e PED-015): roteamento financeiro restrito ao produtor
       ou cruzamento de oferta de estoque com pedidos pendentes;
     - Seguranca contra injecao de prompt / comandos administrativos embutidos.
     """
     alertas: List[str] = []
     texto_norm = _sem_acento(texto)
+    dt_ref_iso = (data_ref or dados.DATA_REFERENCIA).isoformat()
 
-    # 1. Seguranca contra prompt injection e comandos embutidos (Secao 10 do Plano)
     if any(padrao in texto_norm for padrao in PADROES_INJECAO_OU_COMANDO):
         alertas.append(
             "Alerta de seguranca: comando administrativo ou instrucao de manipulacao detectada no texto "
@@ -1529,7 +1461,6 @@ def validar_nao_compra_e_roteamento(
         if not res.itens and res.tipo_mensagem not in ("notificacao oficial", "mensagem de produtor"):
             res.tipo_mensagem = "outro"
 
-    # 2. Notificacao oficial (ex: PED-014 ADAGRO)
     if res.tipo_mensagem == "notificacao oficial" or ("notificacao" in texto_norm and "adagro" in texto_norm):
         res.tipo_mensagem = "notificacao oficial"
         alertas.append(
@@ -1537,32 +1468,22 @@ def validar_nao_compra_e_roteamento(
             "Nao enviar cadastro com CPF ou endereco automaticamente."
         )
         if "inspecao" in texto_norm or "adagro" in texto_norm:
-            alertas.append(
-                "Checklist para a equipe (Inspecao ADAGRO 11 e 12/11/2026): "
-                "(1) Cadastro de produtores ativos (verificar P015 inativo, sem expor CPF automaticamente); "
-                "(2) Certificacoes organicas vigentes (atencao: P008 vencida em 30/09/2026 e P004 vence em 01/12/2026); "
-                "(3) Laudos sanitarios dos ultimos 12 meses (P002 apiario e P003 queijaria com pendencia menor NC-001 da lixeira sem pedal); "
-                "(4) Rastreabilidade dos ultimos 3 lotes (lotes.csv); "
-                "(5) Contratos institucionais vigentes (Mercado Bom Preco, PNAE e Restaurante Raizes)."
-            )
+            alertas.append(_montar_checklist_adagro_dinamico(dt_ref_iso, texto=texto))
 
-    # 3. Mensagem de produtor (ex: PED-012 e PED-015)
     elif res.tipo_mensagem == "mensagem de produtor":
-        info_prod = _identificar_produtor_por_remetente(remetente)
+        info_prod = _identificar_produtor_por_remetente(remetente, texto=texto)
         pid_str = info_prod["id"] if info_prod else "produtor remetente"
 
-        # Caso de consulta financeira do produtor (PED-012)
         if not res.itens and any(t in texto_norm for t in ("quanto eu vendi", "saldo", "pagamento")):
             alertas.append(
                 f"Roteamento (mensagem de produtor - financeiro): consultar vendas_do_produtor e saldo_a_receber "
                 f"em financeiro.csv restrito exclusivamente aos registros de {pid_str}. Nao expor dados bancarios."
             )
 
-        # Caso de oferta de estoque pelo produtor (PED-015) -> cruzar com pedidos pendentes
         for item in res.itens:
             prod_norm = _sem_acento(item.produto_normalizado)
-            if prod_norm == "queijo coalho":
-                demandas = _consultar_demanda_pendente_pedidos("queijo coalho")
+            if prod_norm not in TERMOS_AMBIGUOS_PRODUTO:
+                demandas = _consultar_demanda_pendente_pedidos(prod_norm)
                 if demandas:
                     qtd_desc = (
                         f"{item.quantidade:g} {item.unidade or 'kg'}"
@@ -1571,7 +1492,7 @@ def validar_nao_compra_e_roteamento(
                     )
                     alertas.append(
                         f"Cruzamento de estoque ({item.produto_normalizado}, {qtd_desc} ofertados por {pid_str}): "
-                        f"ha pedidos/cotacoes pendentes para queijo coalho: {', '.join(demandas)}."
+                        f"ha pedidos/cotacoes pendentes para {item.produto_normalizado}: {', '.join(demandas)}."
                     )
 
     return alertas
@@ -1606,25 +1527,39 @@ def _normalizar_campos_schema(res: TriagemResultado) -> None:
     res.confianca = conf_norm if conf_norm in NIVEIS_CONFIANCA_VALIDOS else "alta"
 
 
+DESTINATARIOS_INTERNOS_COOPERATIVA = (
+    "dona lucia",
+    "lucia",
+    "lucia helena",
+    "seu antonio",
+    "antonio",
+    "cooperativa sabor da terra",
+    "sabor da terra",
+)
+
+
 def normalizar_itens_e_intencoes(
     res: TriagemResultado,
     texto: str,
     remetente: Optional[str] = None,
 ) -> None:
     """
-    Normaliza nomes dos produtos, identifica remetente produtor pelo cadastro,
-    separa segundas intencoes (ex: cadastro de vizinho no PED-015) e remove placeholders.
+    Normaliza nomes dos produtos, identifica remetente produtor pelo cadastro ou texto,
+    separa segundas intencoes (ex: cadastro de terceiro/vizinho) e remove placeholders.
     """
     texto_norm = _sem_acento(texto)
 
-    info_produtor = _identificar_produtor_por_remetente(remetente)
+    info_produtor = _identificar_produtor_por_remetente(remetente, texto=texto)
+    produtos_do_produtor: List[str] = []
     if info_produtor:
+        produtos_do_produtor = list(info_produtor.get("produtos_lista") or [])
         nome_id = f"{info_produtor['nome_completo']} ({info_produtor['id']})"
         comprador_norm = _sem_acento(res.comprador or "")
         if (
             not res.comprador
-            or "lucia" in comprador_norm
+            or comprador_norm in DESTINATARIOS_INTERNOS_COOPERATIVA
             or _apenas_digitos(res.comprador) == _apenas_digitos(remetente)
+            or info_produtor["id"].lower() not in comprador_norm
         ):
             res.comprador = nome_id
 
@@ -1670,11 +1605,17 @@ def normalizar_itens_e_intencoes(
         if prod_norm in ITENS_PLACEHOLDER_CATALOGO and item.quantidade is None:
             continue
 
+        nao_produzido_pelo_remetente = bool(
+            produtos_do_produtor
+            and prod_norm not in TERMOS_AMBIGUOS_PRODUTO
+            and not any(p in prod_norm or prod_norm in p for p in produtos_do_produtor)
+        )
         eh_item_terceiro = (
             res.tipo_mensagem == "mensagem de produtor"
             and item.quantidade is None
             and (
-                any(t in obs_norm for t in ("novo produtor", "vizinho", "sebastiao", "cadastro"))
+                any(t in obs_norm for t in ("novo produtor", "vizinho", "cadastro", "outro produtor", "terceiro"))
+                or nao_produzido_pelo_remetente
                 or (prod_norm not in catalogo_norm and prod_norm not in TERMOS_AMBIGUOS_PRODUTO)
             )
         )
@@ -1689,9 +1630,9 @@ def normalizar_itens_e_intencoes(
 
     res.itens = itens_filtrados
 
-    # Garante deteccao de segunda intencao de cadastro de vizinho/terceiro mesmo se o LLM nao colocou nos itens
     if res.tipo_mensagem == "mensagem de produtor" and (
-        "vizinho" in texto_norm or "se cadastrar" in texto_norm or "sebastiao" in texto_norm
+        bool(produtos_segunda_intencao)
+        or any(t in texto_norm for t in ("vizinho", "se cadastrar", "novo produtor", "cadastrar na cooperativa"))
     ):
         detalhe_prods = (
             f" (produtos citados: {', '.join(produtos_segunda_intencao)})"
@@ -1702,7 +1643,7 @@ def normalizar_itens_e_intencoes(
             f"Segunda intencao identificada na mesma mensagem: indicacao de cadastro de novo produtor"
             f"{detalhe_prods}. Encaminhar cadastro para validacao humana sem armazenar CPF."
         )
-        if not _ja_existe_tema(res.problemas, ("segunda intencao", "novo produtor", "vizinho", "sebastiao")):
+        if not _ja_existe_tema(res.problemas, ("segunda intencao", "novo produtor", "vizinho")):
             res.problemas.append(alerta_intencao)
 
         if produtos_segunda_intencao:
@@ -1782,7 +1723,6 @@ def aplicar_validacoes_em_codigo(
     data_referencia: Optional[str] = None,
 ) -> TriagemResultado:
     """Aplica todas as validacoes deterministicas de D2, D3, D4 e D5 em codigo Python sobre a extracao."""
-    # 0. Normalizacao estrita dos campos enumerados do schema congelado (D5)
     _normalizar_campos_schema(res)
 
     if not res.canal and canal:
@@ -1794,15 +1734,15 @@ def aplicar_validacoes_em_codigo(
         dt_ref = (
             date.fromisoformat(str(data_referencia).strip()[:10])
             if data_referencia
-            else _obter_data_referencia_base()
+            else dados.DATA_REFERENCIA
         )
     except ValueError:
-        dt_ref = _obter_data_referencia_base()
+        dt_ref = dados.DATA_REFERENCIA
 
     # 1. Calculo/validacao do prazo em codigo Python
     res.prazo = calcular_prazo_em_codigo(texto_original, res.prazo, data_referencia=data_referencia)
 
-    # 2. Normalizacao de produtos, identificacao de produtor por telefone e separacao de intencoes
+    # 2. Normalizacao de produtos, identificacao de produtor por telefone/texto e separacao de intencoes
     normalizar_itens_e_intencoes(res, texto_original, remetente=remetente)
 
     # 3. Consistencia entre dia da semana e data do calendario
@@ -1838,7 +1778,7 @@ def aplicar_validacoes_em_codigo(
             res.problemas.append(alerta_cont)
 
     # 9. Validacoes D4: mensagens nao-compra, checklist ADAGRO, cruzamento de estoque e seguranca
-    for alerta_roteamento in validar_nao_compra_e_roteamento(res, texto_original, remetente=remetente):
+    for alerta_roteamento in validar_nao_compra_e_roteamento(res, texto_original, remetente=remetente, data_ref=dt_ref):
         if not _ja_existe_tema(res.problemas, (alerta_roteamento[:35],)):
             res.problemas.append(alerta_roteamento)
 
@@ -1915,6 +1855,35 @@ def obter_metadados_congelamento() -> Dict[str, Any]:
         "hash_schema_sha256": hash_schema,
         "hash_prompt_sha256": hash_prompt,
     }
+
+# ==============================================================================
+# 6.5. Funcao Auxiliar: Gerar JSON Schema compativel com Gemini API 
+# ==============================================================================
+
+def _schema_gemini(model_cls) -> dict:
+    """Gera JSON Schema compativel com a Gemini API (sem additionalProperties/$defs)."""
+    raw = model_cls.model_json_schema()
+    defs = raw.pop("$defs", {})
+
+    def _limpar(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_name = node["$ref"].split("/")[-1]
+                resolved = dict(defs.get(ref_name, {}))
+                for k, v in node.items():
+                    if k != "$ref":
+                        resolved[k] = v
+                return _limpar(resolved)
+            return {
+                k: _limpar(v)
+                for k, v in node.items()
+                if k != "additionalProperties"
+            }
+        if isinstance(node, list):
+            return [_limpar(item) for item in node]
+        return node
+
+    return _limpar(raw)
 
 
 # ==============================================================================

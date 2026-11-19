@@ -18,6 +18,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+_ESTE_DIR = Path(__file__).resolve().parent
+RAIZ_PROJETO = _ESTE_DIR.parent if _ESTE_DIR.name == "scripts" else _ESTE_DIR
+if str(RAIZ_PROJETO) not in sys.path:
+    sys.path.insert(0, str(RAIZ_PROJETO))
+
 from tools.triagem import (
     TriagemResultado,
     _sem_acento,
@@ -27,7 +32,6 @@ from tools.triagem import (
     triar_pedido,
 )
 
-RAIZ_PROJETO = Path(__file__).resolve().parent
 DATA_PATH = RAIZ_PROJETO / "data" / "pedidos.json"
 CACHE_PATH = RAIZ_PROJETO / ".cache_triagem" / "cache_v1.json"
 

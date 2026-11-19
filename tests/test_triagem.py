@@ -15,6 +15,10 @@ if str(RAIZ_PROJETO) not in sys.path:
 from tools.triagem import (
     CAMPOS_ITEM_PEDIDO,
     CAMPOS_TRIAGEM_RESULTADO,
+    _FAIXAS_BOM_PRECO_FALLBACK,
+    _PRECOS_PNAE_FALLBACK,
+    _carregar_faixas_bom_preco,
+    _carregar_precos_pnae,
     ItemPedido,
     TriagemResultado,
     aplicar_validacoes_em_codigo,
@@ -152,13 +156,14 @@ def test_validacoes_ambiguidade_e_lacunas():
 
 
 def test_validacao_safra_e_orcamento_integrados():
-    # PED-007: caja em novembro tem safra 'baixa'; orcamento calculado em codigo
+    # PED-007: caja em novembro tem safra 'baixa'; orcamento calculado em codigo (incluindo faixa extra vs especial da goiaba)
     resultado_ped007 = TriagemResultado(
         tipo_mensagem="cotacao",
         comprador="Hotel Fazenda Serra Negra",
         canal="formulario_web",
         itens=[
             ItemPedido(produto_normalizado="queijo coalho", quantidade=25.0, unidade="kg"),
+            ItemPedido(produto_normalizado="goiaba", quantidade=20.0, unidade="kg"),
             ItemPedido(produto_normalizado="cajá", quantidade=10.0, unidade="kg"),
             ItemPedido(produto_normalizado="frango caipira", quantidade=40.0, unidade="kg"),
         ],
@@ -167,11 +172,13 @@ def test_validacao_safra_e_orcamento_integrados():
     )
     validado = aplicar_validacoes_em_codigo(
         resultado_ped007,
-        "Pedido para evento de 08/nov: queijo coalho 25kg, cajá 10kg, frango caipira 40kg.",
+        "Pedido para evento de 08/nov: queijo coalho 25kg, goiaba 20kg, cajá 10kg, frango caipira 40kg.",
     )
     problemas_txt = " | ".join(validado.problemas).lower()
     assert "alerta de safra" in problemas_txt and "caj" in problemas_txt
     assert "orcamento preliminar calculado em codigo" in problemas_txt
+    assert "goiaba paluma especial" in problemas_txt
+    assert "nc-001 grave" in problemas_txt
 
 
 def test_validacao_certificacao_e_contrato_pnae():
@@ -443,6 +450,40 @@ def test_congelamento_schema_e_prompt_e_correcoes_d5():
     # 4. Mensagem vazia com remetente contendo CPF passa por mascaramento
     saida_vazia = triar_pedido("", canal="whatsapp", remetente="Cliente CPF 432.198.765-01")
     assert "432.198.765-01" not in str(saida_vazia)
+
+    # 5. Identificacao de produtor pelo proprio texto quando remetente=None (chamada via UI/Agente)
+    res_auto_id = aplicar_validacoes_em_codigo(
+        TriagemResultado(
+            tipo_mensagem="consulta documental",
+            comprador=None,
+            itens=[],
+        ),
+        "Sou a Maria (P001). Quanto eu vendi esse mês e qual é o saldo que o Cícero (P003) tem a receber?",
+        remetente=None,
+    )
+    assert res_auto_id.tipo_mensagem == "mensagem de produtor"
+    assert "P001" in (res_auto_id.comprador or "")
+    assert "P003" not in (res_auto_id.comprador or "")
+
+    # 6. Anti-falso-positivo: comprador 'Carlos' sem ID nao deve ser confundido com P007 (Antonio Carlos)
+    res_carlos = aplicar_validacoes_em_codigo(
+        TriagemResultado(
+            tipo_mensagem="pedido de compra",
+            comprador="Carlos",
+            itens=[ItemPedido(produto_normalizado="queijo coalho", quantidade=10.0, unidade="kg")],
+            prazo="2026-11-10",
+        ),
+        "Bom dia, aqui é o Carlos. Preciso de 10kg de queijo coalho para 10/11/2026.",
+        remetente=None,
+    )
+    assert "P007" not in (res_carlos.comprador or "")
+    assert res_carlos.comprador == "Carlos"
+
+    # 7. Conferencia item a item dos leitores dinamicos dos contratos com as tabelas dos arquivos .txt
+    assert _carregar_faixas_bom_preco() == _FAIXAS_BOM_PRECO_FALLBACK
+    assert len(_carregar_faixas_bom_preco()) == 11
+    assert _carregar_precos_pnae() == _PRECOS_PNAE_FALLBACK
+    assert len(_carregar_precos_pnae()) == 14
 
 
 if __name__ == "__main__":
