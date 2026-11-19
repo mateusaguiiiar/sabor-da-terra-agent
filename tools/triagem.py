@@ -546,7 +546,8 @@ def _carregar_precos_pnae() -> Dict[str, Tuple[float, str]]:
             nome_bruto = re.sub(r"\([^)]*\)", "", m.group(1)).strip()
             prod = normalizar_nome_produto(nome_bruto)
             valor = float(m.group(2).replace(",", "."))
-            unid = _sem_acento(m.group(3))
+            unid_raw = _sem_acento(m.group(3)).rstrip(".")
+            unid = "unidade" if unid_raw in ("un", "unid", "unidade") else ("duzia" if unid_raw in ("dz", "duzia") else unid_raw)
             precos[prod] = (valor, unid)
         return precos if precos else dict(_PRECOS_PNAE_FALLBACK)
     except OSError:
