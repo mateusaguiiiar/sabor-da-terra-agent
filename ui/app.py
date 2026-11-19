@@ -16,6 +16,18 @@ from google.adk.sessions import InMemorySessionService
 from assistent.agent import root_agent
 from google.adk.runners import RunConfig
 
+import re
+from tools.dados import _produtores
+
+def produtor_por_telefone(telefone):
+    """Descobre o id do produtor (ex: P001) a partir do telefone."""
+    digitos = re.sub(r"\D", "", telefone or "")
+    if not digitos:
+        return ""
+    df = _produtores()
+    achou = df[df["telefone"].str.replace(r"\D", "", regex=True) == digitos]
+    return achou.iloc[0]["id"] if len(achou) else ""
+
 # ==========================================
 # 1. Configuração da Página
 # ==========================================
@@ -105,25 +117,16 @@ async def executar_agente(mensagem_usuario: str, perfil: str, telefone: str):
         parts=[genai_types.Part(text=mensagem_usuario)]
     )
     
-    session_id = f"sessao_{telefone}" if telefone else "sessao_anonima"
-    
-    try:
-        sessao = await adk_session_service.get_session(session_id)
-    except Exception:
-        sessao = None
+    perfil_curto = (perfil or "equipe").split()[0].lower()
+    produtor_id = produtor_por_telefone(telefone) if perfil_curto == "produtor" else ""
+    session_id = f"sessao_{perfil_curto}_{produtor_id or 'geral'}"
 
-    if not sessao:
+    sessao = await adk_session_service.get_session(
+        app_name="sabor_da_terra_ui", user_id="user_streamlit", session_id=session_id)
+    if sessao is None:
         sessao = await adk_session_service.create_session(
-            session_id=session_id, 
-            user_id="user_streamlit",
-            app_name="sabor_da_terra_ui" # Argumento obrigatório adicionado
-        )
-        
-    if hasattr(sessao, 'state'):
-        if sessao.state is None:
-            sessao.state = {}
-        sessao.state["perfil"] = perfil.lower() if perfil else "equipe"
-        sessao.state["produtor_id"] = telefone 
+            app_name="sabor_da_terra_ui", user_id="user_streamlit", session_id=session_id,
+            state={"perfil": perfil_curto, "produtor_id": produtor_id})
 
     resposta_final = {
         "texto": "",
