@@ -1916,6 +1916,34 @@ def obter_metadados_congelamento() -> Dict[str, Any]:
         "hash_prompt_sha256": hash_prompt,
     }
 
+# ==============================================================================
+# 6.5. Funcao Auxiliar: Gerar JSON Schema compativel com Gemini API 
+# ==============================================================================
+
+def _schema_gemini(model_cls) -> dict:
+    """Gera JSON Schema compativel com a Gemini API (sem additionalProperties/$defs)."""
+    raw = model_cls.model_json_schema()
+    defs = raw.pop("$defs", {})
+
+    def _limpar(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_name = node["$ref"].split("/")[-1]
+                resolved = dict(defs.get(ref_name, {}))
+                for k, v in node.items():
+                    if k != "$ref":
+                        resolved[k] = v
+                return _limpar(resolved)
+            return {
+                k: _limpar(v)
+                for k, v in node.items()
+                if k != "additionalProperties"
+            }
+        if isinstance(node, list):
+            return [_limpar(item) for item in node]
+        return node
+
+    return _limpar(raw)
 
 # ==============================================================================
 # 7. Funcao Principal: triar_pedido
@@ -1982,7 +2010,7 @@ def triar_pedido(
                 config=types.GenerateContentConfig(
                     system_instruction=PROMPT_SISTEMA_TRIAGEM,
                     response_mime_type="application/json",
-                    response_schema=TriagemResultado,
+                    response_schema=_schema_gemini(TriagemResultado),
                     temperature=0.1,
                 ),
             )
