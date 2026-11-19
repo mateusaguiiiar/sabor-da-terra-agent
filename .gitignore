@@ -1,6 +1,26 @@
+# Ambiente e segredos
 .env
-.cache_respostas_teste.json
 .venv/
-assistent/.adk/
+venv/
+
+# Python e testes
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Google ADK e caches do projeto
+**/.adk/
+.cache_respostas_teste.json
+
+# Banco vetorial (arquivos temporários de execução do SQLite/Chroma)
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Editores e Sistemas Operacionais
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
