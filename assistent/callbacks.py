@@ -67,6 +67,8 @@ def before_model_guard(
     # 2. Check test cache if enabled
     if USE_TEST_CACHE:
         key = _get_cache_key(llm_request)
+        # Guarda a chave para o after_model_logger salvar a resposta nesse mesmo índice
+        callback_context.state["temp:last_req_key"] = key
         cache = _load_cache()
         if key in cache:
             logger.info(f"[CACHE HIT] Retornando resposta em cache (key={key[:8]}).")

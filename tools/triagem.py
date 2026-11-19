@@ -1936,8 +1936,8 @@ def triar_pedido(
     modelo_principal = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     modelos_candidatos = list(dict.fromkeys([
         modelo_principal,
+        os.getenv("GEMINI_MODEL_RESERVA", "gemini-3.5-flash"),
         "gemini-3.5-flash-lite",
-        "gemini-3.8-flash",
     ]))
 
     resultado_llm: Optional[TriagemResultado] = None

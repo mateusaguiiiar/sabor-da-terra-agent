@@ -14,7 +14,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
-from assistent.agent import root_agent
+from assistent.agent import agente_reserva, root_agent
 from tools import dados
 
 APP_NAME = "sabor_da_terra_ui"
@@ -144,10 +144,30 @@ def iniciar_adk():
         app_name=APP_NAME,
         session_service=session_service,
     )
-    return runner, session_service
+    # Mesmo serviço de sessão: o reserva enxerga o histórico da conversa
+    runner_reserva = Runner(
+        agent=agente_reserva,
+        app_name=APP_NAME,
+        session_service=session_service,
+    )
+    return runner, runner_reserva, session_service
 
 
-adk_runner, adk_session_service = iniciar_adk()
+adk_runner, adk_runner_reserva, adk_session_service = iniciar_adk()
+
+MENSAGEM_SOBRECARGA = (
+    "⚠️ O serviço de IA do Google está sobrecarregado no momento. "
+    "Aguarde alguns segundos e envie a pergunta de novo."
+)
+
+
+def erro_passageiro(erro: Exception) -> bool:
+    """503 (modelo sobrecarregado), 429 (cota) e similares: costumam passar sozinhos."""
+    codigo = getattr(erro, "code", None)
+    if codigo in (429, 500, 502, 503, 504):
+        return True
+    texto = str(erro)
+    return any(m in texto for m in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded"))
 
 
 async def executar_agente(mensagem_usuario: str, perfil: str, telefone: str, nonce: int):
@@ -177,13 +197,30 @@ async def executar_agente(mensagem_usuario: str, perfil: str, telefone: str, non
             },
         )
 
+    try:
+        return await _rodar(adk_runner, session_id, conteudo)
+    except Exception as erro:
+        if not erro_passageiro(erro):
+            raise
+        print(f"[AVISO] Modelo principal falhou ({erro}). Tentando o modelo reserva...")
+
+    try:
+        return await _rodar(adk_runner_reserva, session_id, conteudo)
+    except Exception as erro:
+        if not erro_passageiro(erro):
+            raise
+        print(f"[AVISO] Modelo reserva também falhou ({erro}).")
+        return {"texto": MENSAGEM_SOBRECARGA, "fontes": [], "json_pedido": None}
+
+
+async def _rodar(runner, session_id: str, conteudo):
     resposta_final = {
         "texto": "",
         "fontes": [],
         "json_pedido": None,
     }
 
-    async for event in adk_runner.run_async(
+    async for event in runner.run_async(
         user_id=USER_ID,
         session_id=session_id,
         new_message=conteudo,
@@ -197,6 +234,13 @@ async def executar_agente(mensagem_usuario: str, perfil: str, telefone: str, non
             for func_resp in event.get_function_responses():
                 resp = func_resp.response or {}
                 if func_resp.name == "buscar_documentos" and isinstance(resp, dict):
+                    for fonte in resp.get("fontes") or []:
+                        if isinstance(fonte, dict) and fonte.get("arquivo"):
+                            rotulo = fonte["arquivo"]
+                            if fonte.get("secao"):
+                                rotulo += f" (seção {fonte['secao']})"
+                            if rotulo not in resposta_final["fontes"]:
+                                resposta_final["fontes"].append(rotulo)
                     trechos = resp.get("trechos") or resp.get("resultados") or []
                     if isinstance(trechos, list) and trechos:
                         for t in trechos:
