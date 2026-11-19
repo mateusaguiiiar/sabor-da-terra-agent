@@ -41,10 +41,10 @@ resultado = triar_pedido(
 python tests/test_triagem.py
 
 # Avaliação dos 15 pedidos de data/pedidos.json em 3 rodadas seguidas com cache local
-python test_triagem_15_pedidos.py
+python scripts/test_triagem_15_pedidos.py
 
 # Avaliação forçando chamadas reais à Gemini API (ignora cache)
-python test_triagem_15_pedidos.py --sem-cache
+python scripts/test_triagem_15_pedidos.py --sem-cache
 ```
 
 ### Congelamento do Prompt e do Schema (Etapa D5 — 17/11/2026)
@@ -111,8 +111,8 @@ Mensagem Bruta (texto, canal, remetente)
 
 Nos testes automatizados executados sobre o módulo:
 - **Testes unitários e de integração (`tests/test_triagem.py`):** `11/11` aprovados cobrindo normalização sem chutes, cálculo de datas em código, consistência de dia da semana, mascaramento de dados sensíveis, safra, certificação orgânica, contratos (Raízes, Mercado Bom Preço e PNAE), integração nos pedidos `001`, `006`, `012` e `015`, idioma inglês (`PED-011`), checklist ADAGRO (`PED-014`), proteção contra injeção de comandos e verificação de congelamento de schema/prompt (D5).
-- **Conjunto dos 15 pedidos em 3 rodadas seguidas (`test_triagem_15_pedidos.py`):**
-  - Rodadas consecutivas com 100% de JSON válido e gabarito aprovado: `3/3` (`45/45` execuções — `100%`)
+- **Conjunto dos 15 pedidos em 3 rodadas seguidas (`scripts/test_triagem_15_pedidos.py`):**
+  - Rodadas consecutivas com 100% de JSON válido e gabarito aprovado: `3/3` (`45/45` execuções — `100%`; no modo padrão o script reutiliza o cache em disco das extrações da Gemini API para preservar a cota gratuita e reexecuta 100% das validações determinísticas de D2 a D5 em código; para validar chamadas reais à API a cada rodada, utilizar a flag `--sem-cache`).
   - Schema JSON válido: `15/15` (`100%`)
   - Ausência de vazamento de dados sensíveis (CPF, conta, agência, PIX): `15/15` (`100%`)
   - Classificação do tipo de mensagem: `15/15` (`100%`)
